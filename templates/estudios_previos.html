@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <title>Generador de Estudios Previos</title>
+
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/app.css') }}">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/animate.css/4.1.1/animate.min.css"/>
+</head>
+
+<body>
+
+<button class="theme-toggle" id="theme-toggle">🌙</button>
+
+<!-- 🔀 Navegación -->
+<div style="text-align:center; margin-top:20px;">
+  <a href="/" class="btn btn-outline-primary me-2">🕷️ Certificados</a>
+  <a href="/estudios-previos" class="btn btn-primary">📄 Estudios Previos</a>
+</div>
+
+<div class="main-container fade-in">
+  <header>
+    <h1>📄 Generador de Estudios Previos</h1>
+    <p>Sube tu archivo Excel y tu plantilla Word.</p>
+  </header>
+
+  <form id="form-estudios" enctype="multipart/form-data">
+    <section class="upload-row">
+      <div class="upload-card">
+        <h3>📊 Archivo Excel</h3>
+        <input type="file" name="excel" accept=".xlsx" required />
+      </div>
+
+      <div class="upload-card">
+        <h3>📄 Plantilla Word</h3>
+        <input type="file" name="template" accept=".docx" required />
+      </div>
+    </section>
+
+    <button type="submit">🚀 Generar documentos</button>
+  </form>
+
+  <footer>
+    Universidad Distrital 2025 ⚡
+  </footer>
+</div>
+
+<script src="{{ url_for('static', filename='js/theme-toggle.js') }}"></script>
+<script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+<script src="{{ url_for('static', filename='js/popup.js') }}"></script>
+
+<script>
+document.getElementById("form-estudios").addEventListener("submit", function(e){
+  e.preventDefault();
+
+  const data = new FormData(this);
+
+  fetch("/estudios-previos", {
+    method: "POST",
+    body: data
+  })
+  .then(res => res.json())
+  .then(r => window.location.href = r.url)
+  .catch(() => alert("❌ Error al generar documentos"));
+});
+</script>
+
+</body>
+</html>

@@ -1,0 +1,17 @@
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+
+env/
+venv/
+
+.git/
+.gitignore
+
+dist/
+build/
+
+# Railway creará estas carpetas durante el build con RUN mkdir
+uploads/
+salidas/

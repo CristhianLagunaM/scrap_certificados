@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <title>Procesador de Certificados</title>
+
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/app.css') }}">
+  <link rel="stylesheet"
+        href="https://cdnjs.cloudflare.com/ajax/libs/animate.css/4.1.1/animate.min.css"/>
+</head>
+
+<body>
+
+<!-- 🌙 Tema -->
+<button class="theme-toggle" id="theme-toggle">🌙</button>
+
+<!-- 🔀 Navegación -->
+<div style="text-align:center; margin-top:20px;">
+  <a href="/" class="btn-primary">🕷️ Certificados</a>
+  <a href="/estudios-previos" class="btn-primary" style="margin-left:10px;">
+    📄 Estudios Previos
+  </a>
+</div>
+
+<div class="main-container fade-in">
+
+  <!-- Fondo animado -->
+  <div class="hero-bg">
+    <span></span><span></span><span></span><span></span>
+    <span></span><span></span><span></span>
+  </div>
+
+  <header>
+    <h1>🕷️ Procesador de Certificados</h1>
+    <p>Sube el archivo Excel para iniciar el scraping.</p>
+  </header>
+
+  <!-- Formulario -->
+  <form id="form-procesar" enctype="multipart/form-data">
+    <section class="upload-row">
+      <div class="upload-card">
+        <h3>📊 Archivo Excel</h3>
+        <input type="file" name="archivo" accept=".xlsx" required />
+      </div>
+    </section>
+
+    <button type="submit">🚀 Iniciar procesamiento</button>
+  </form>
+
+  <!-- Consola -->
+  <section style="margin-top:30px;">
+    <h3>🖥️ Consola</h3>
+    <div id="logs-box"></div>
+  </section>
+
+  <footer>
+    Universidad Distrital 2025 ⚡
+  </footer>
+
+</div>
+
+<script src="{{ url_for('static', filename='js/theme-toggle.js') }}"></script>
+<script src="{{ url_for('static', filename='js/certificados.js') }}"></script>
+
+</body>
+</html>
