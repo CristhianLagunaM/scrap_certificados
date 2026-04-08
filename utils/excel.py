@@ -5,6 +5,7 @@ def generar_excel_coloreado(df, output):
     Genera un Excel con la columna 'EstadoDescarga' coloreada:
     - OK     → azul
     - ERROR  → rojo
+    - NO_APLICA -> gris
     """
 
     if "EstadoDescarga" not in df.columns:
@@ -20,6 +21,7 @@ def generar_excel_coloreado(df, output):
         # Formatos
         azul = wb.add_format({"font_color": "blue"})
         rojo = wb.add_format({"font_color": "red"})
+        gris = wb.add_format({"font_color": "#666666"})
         bold = wb.add_format({"bold": True})
 
         # Encabezados en negrita
@@ -35,6 +37,8 @@ def generar_excel_coloreado(df, output):
 
             if estado_txt == "OK":
                 fmt = azul
+            elif estado_txt == "NO_APLICA":
+                fmt = gris
             else:
                 fmt = rojo
 

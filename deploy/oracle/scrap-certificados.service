@@ -1,0 +1,16 @@
+[Unit]
+Description=Scrap Certificados Flask App
+After=network.target
+
+[Service]
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/scrap_certificados
+Environment="PATH=/home/ubuntu/scrap_certificados/venv/bin"
+Environment="PYTHONUNBUFFERED=1"
+ExecStart=/home/ubuntu/scrap_certificados/venv/bin/gunicorn wsgi:application --bind 127.0.0.1:8000 --worker-class gthread --threads 8 --workers 1 --timeout 0 --access-logfile - --error-logfile - --capture-output --log-level info
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

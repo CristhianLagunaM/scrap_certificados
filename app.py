@@ -2,10 +2,12 @@ import os
 import asyncio
 import threading
 import zipfile
-from flask import Flask, request, render_template, send_from_directory, Response, jsonify
+from queue import Empty, Queue
+from uuid import uuid4
+from flask import Flask, request, render_template, send_from_directory, Response, jsonify, stream_with_context
 
 # --- Certificados ---
-from utils.logger_sse import log, log_queue
+from utils.logger_sse import log, set_log_queue
 from utils.loader import cargar_excel
 from utils.excel import generar_excel_coloreado
 from scrapers.scraper_minorias import scrap_minorias
@@ -30,25 +32,87 @@ os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 ARCHIVOS_GENERADOS = {
     "zip_full": None
 }
+ESTADO_PROCESO = {
+    "activo": False,
+    "run_id": None,
+    "log_queue": None,
+}
 
 # --------------------------------------------------------------
 # App Flask
 # --------------------------------------------------------------
 app = Flask(__name__)
 app.config["UPLOAD_FOLDER"] = UPLOAD_FOLDER
+app.config["MAX_CONTENT_LENGTH"] = 20 * 1024 * 1024
+
+
+def limpiar_logs_pendientes():
+    queue = ESTADO_PROCESO.get("log_queue")
+    if queue is None:
+        return
+
+    while True:
+        try:
+            queue.get_nowait()
+        except Empty:
+            break
+
+
+def preparar_salida():
+    for nombre in os.listdir(OUTPUT_FOLDER):
+        ruta = os.path.join(OUTPUT_FOLDER, nombre)
+
+        if os.path.isfile(ruta):
+            os.remove(ruta)
+            continue
+
+        if os.path.isdir(ruta) and nombre in {"MINORIAS", "INDIGENAS"}:
+            import shutil
+
+            shutil.rmtree(ruta)
+
+
+def crear_zip_resultados(zip_path):
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as z:
+        for nombre in sorted(os.listdir(OUTPUT_FOLDER)):
+            ruta = os.path.join(OUTPUT_FOLDER, nombre)
+
+            if os.path.isfile(ruta) and nombre.endswith(".xlsx"):
+                z.write(ruta, nombre)
+                continue
+
+            if os.path.isdir(ruta) and nombre in {"MINORIAS", "INDIGENAS"}:
+                for pdf in sorted(os.listdir(ruta)):
+                    pdf_path = os.path.join(ruta, pdf)
+                    if os.path.isfile(pdf_path) and pdf.lower().endswith(".pdf"):
+                        z.write(pdf_path, f"{nombre.lower()}/{pdf}")
 
 # --------------------------------------------------------------
 # STREAM SSE (CERTIFICADOS)
 # --------------------------------------------------------------
 @app.route("/logs_stream")
 def logs_stream():
+    run_id = request.args.get("run_id")
+    queue = ESTADO_PROCESO.get("log_queue")
+
+    if not run_id or run_id != ESTADO_PROCESO.get("run_id") or queue is None:
+        return jsonify({"error": "Stream no disponible para esa ejecución"}), 404
+
+    @stream_with_context
     def stream():
+        # Padding inicial para evitar buffering en proxies/navegador.
+        yield ":" + (" " * 2048) + "\n\n"
+        yield "retry: 1000\n\n"
         while True:
-            msg = log_queue.get()
+            msg = queue.get()
             yield f"data: {msg}\n\n"
             if msg == "__FIN__":
                 break
-    return Response(stream(), mimetype="text/event-stream")
+    response = Response(stream(), mimetype="text/event-stream")
+    response.headers["Cache-Control"] = "no-cache, no-transform"
+    response.headers["X-Accel-Buffering"] = "no"
+    response.headers["Connection"] = "keep-alive"
+    return response
 
 # --------------------------------------------------------------
 # Descarga genérica
@@ -86,16 +150,33 @@ def estudios_previos_view():
 # --------------------------------------------------------------
 # SCRAPING CERTIFICADOS (NO TOCAR)
 # --------------------------------------------------------------
-async def job(path_excel):
+async def job(path_excel, run_id):
 
     ARCHIVOS_GENERADOS["zip_full"] = None
 
     try:
+        preparar_salida()
         log("📄 Leyendo archivo Excel...")
         df = cargar_excel(path_excel)
 
         df_min = df[df["Tipo Inscripcion"].str.contains("MINORIAS", na=False)].copy()
         df_ind = df[df["Tipo Inscripcion"].str.contains("INDIGENAS", na=False)].copy()
+
+        total_encontrados = len(df_min) + len(df_ind)
+        log(f"📊 Registros válidos encontrados para scraping: {total_encontrados}")
+
+        if total_encontrados == 0:
+            log("ℹ El Excel no contiene registros de MINORÍAS ni INDÍGENAS.")
+            df_resultado = df.copy()
+            df_resultado["EstadoDescarga"] = "NO_APLICA"
+            df_resultado["DetalleDescarga"] = (
+                "Tipo de inscripción no soportado por este módulo. "
+                "Actualmente solo se procesan MINORIAS e INDIGENAS."
+            )
+            generar_excel_coloreado(
+                df_resultado,
+                os.path.join(OUTPUT_FOLDER, "resultado_sin_coincidencias.xlsx")
+            )
 
         # ---------------- MINORÍAS ----------------
         if not df_min.empty:
@@ -127,19 +208,7 @@ async def job(path_excel):
         zip_name = "certificados.zip"
         zip_path = os.path.join(OUTPUT_FOLDER, zip_name)
 
-        with zipfile.ZipFile(zip_path, "w") as z:
-            for f in os.listdir(OUTPUT_FOLDER):
-                full = os.path.join(OUTPUT_FOLDER, f)
-
-                if f.endswith(".xlsx"):
-                    z.write(full, f)
-
-                if os.path.isdir(full) and f in ["MINORIAS", "INDIGENAS"]:
-                    for pdf in os.listdir(full):
-                        z.write(
-                            os.path.join(full, pdf),
-                            f"{f.lower()}/{pdf}"
-                        )
+        crear_zip_resultados(zip_path)
 
         ARCHIVOS_GENERADOS["zip_full"] = zip_name
         log("📦 ZIP generado correctamente")
@@ -149,7 +218,9 @@ async def job(path_excel):
         log(f"❌ Error inesperado: {e}")
 
     finally:
-        log("__FIN__")
+        if ESTADO_PROCESO.get("run_id") == run_id:
+            ESTADO_PROCESO["activo"] = False
+            log("__FIN__")
 
 # --------------------------------------------------------------
 # POST /procesar (CERTIFICADOS)
@@ -157,20 +228,31 @@ async def job(path_excel):
 @app.route("/procesar", methods=["POST"])
 def procesar():
 
+    if ESTADO_PROCESO["activo"]:
+        return jsonify({"error": "Ya hay un procesamiento en curso"}), 409
+
     archivo = request.files.get("archivo")
     if not archivo or archivo.filename == "":
         return jsonify({"error": "Archivo inválido"}), 400
+
+    run_id = uuid4().hex
+    queue = Queue()
+    ESTADO_PROCESO["run_id"] = run_id
+    ESTADO_PROCESO["log_queue"] = queue
+    set_log_queue(queue)
+    limpiar_logs_pendientes()
+    ESTADO_PROCESO["activo"] = True
 
     path_excel = os.path.join(UPLOAD_FOLDER, "entrada.xlsx")
     archivo.save(path_excel)
 
     thread = threading.Thread(
-        target=lambda: asyncio.run(job(path_excel)),
+        target=lambda: asyncio.run(job(path_excel, run_id)),
         daemon=True
     )
     thread.start()
 
-    return jsonify({"status": "procesando"})
+    return jsonify({"status": "procesando", "run_id": run_id})
 
 # --------------------------------------------------------------
 # POST /estudios-previos (AISLADO)

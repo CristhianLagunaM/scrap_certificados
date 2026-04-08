@@ -49,6 +49,14 @@
 
   <!-- Consola -->
   <section style="margin-top:30px;">
+    <div id="status-panel" class="status-panel" style="display:none;">
+      <div class="status-spinner" aria-hidden="true"></div>
+      <div class="status-copy">
+        <strong id="status-title">Procesando</strong>
+        <p id="status-text">La solicitud sigue activa en el servidor.</p>
+      </div>
+      <div id="status-timer" class="status-timer">00:00</div>
+    </div>
     <h3>🖥️ Consola</h3>
     <div id="logs-box"></div>
   </section>
