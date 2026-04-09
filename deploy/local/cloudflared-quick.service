@@ -1,0 +1,14 @@
+[Unit]
+Description=Cloudflared Quick Tunnel for Scrap Certificados
+After=network-online.target scrap-certificados-docker.service
+Requires=scrap-certificados-docker.service
+Wants=network-online.target
+
+[Service]
+WorkingDirectory=/home/vi/Documentos/certificado/scrap_certificados
+ExecStart=/home/vi/Documentos/certificado/scrap_certificados/deploy/local/cloudflared_quick_tunnel.sh
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

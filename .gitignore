@@ -4,4 +4,6 @@ uploads/
 salidas/
 *.log
 .env
+.env.named-tunnel
 venv/
+.runtime/

@@ -1,0 +1,13 @@
+[Unit]
+Description=Tailscale Private Route for Scrap Certificados
+After=tailscaled.service scrap-certificados-docker.service
+Requires=tailscaled.service scrap-certificados-docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/tailscale serve --bg --http=80 http://127.0.0.1:8001
+ExecStop=/usr/bin/tailscale serve reset
+
+[Install]
+WantedBy=multi-user.target

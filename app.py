@@ -178,29 +178,49 @@ async def job(path_excel, run_id):
                 os.path.join(OUTPUT_FOLDER, "resultado_sin_coincidencias.xlsx")
             )
 
+        scraping_tasks = {}
+
         # ---------------- MINORÍAS ----------------
         if not df_min.empty:
             log(f"▶ Procesando {len(df_min)} registros MINORÍAS...")
-            df_min_r = await scrap_minorias(df_min, OUTPUT_FOLDER)
-            generar_excel_coloreado(
-                df_min_r,
-                os.path.join(OUTPUT_FOLDER, "resultado_minorias.xlsx")
+            scraping_tasks["minorias"] = asyncio.create_task(
+                scrap_minorias(df_min, OUTPUT_FOLDER)
             )
-            log("✔ MINORÍAS completado")
         else:
             log("ℹ No hay registros MINORÍAS")
 
         # ---------------- INDÍGENAS ----------------
         if not df_ind.empty:
             log(f"▶ Procesando {len(df_ind)} registros INDÍGENAS...")
-            df_ind_r = await scrap_indigenas(df_ind, OUTPUT_FOLDER)
-            generar_excel_coloreado(
-                df_ind_r,
-                os.path.join(OUTPUT_FOLDER, "resultado_indigenas.xlsx")
+            scraping_tasks["indigenas"] = asyncio.create_task(
+                scrap_indigenas(df_ind, OUTPUT_FOLDER)
             )
-            log("✔ INDÍGENAS completado")
         else:
             log("ℹ No hay registros INDÍGENAS")
+
+        if scraping_tasks:
+            scraping_results = await asyncio.gather(
+                *scraping_tasks.values(),
+                return_exceptions=True,
+            )
+
+            for key, result in zip(scraping_tasks.keys(), scraping_results):
+                if isinstance(result, Exception):
+                    raise result
+
+                if key == "minorias":
+                    generar_excel_coloreado(
+                        result,
+                        os.path.join(OUTPUT_FOLDER, "resultado_minorias.xlsx")
+                    )
+                    log("✔ MINORÍAS completado")
+                    continue
+
+                generar_excel_coloreado(
+                    result,
+                    os.path.join(OUTPUT_FOLDER, "resultado_indigenas.xlsx")
+                )
+                log("✔ INDÍGENAS completado")
 
         # ---------------- ZIP FINAL ----------------
         log("📦 Empaquetando ZIP final...")

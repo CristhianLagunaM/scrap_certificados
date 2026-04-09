@@ -1,0 +1,21 @@
+services:
+  app:
+    build:
+      context: .
+    container_name: scrap-certificados-app
+    restart: unless-stopped
+    ports:
+      - "8001:8000"
+    environment:
+      PYTHONUNBUFFERED: "1"
+      TZ: "America/Bogota"
+      SCRAPER_CONCURRENCY: "3"
+    volumes:
+      - ./uploads:/app/uploads
+      - ./salidas:/app/salidas
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/', timeout=10)\""]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 40s
