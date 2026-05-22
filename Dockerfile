@@ -6,6 +6,7 @@ ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 # Dependencias necesarias para Chromium
 RUN apt-get update && apt-get install -y --no-install-recommends \
     wget curl unzip git \
+    tesseract-ocr tesseract-ocr-spa \
     libnss3 libatk1.0-0 libatk-bridge2.0-0 \
     libcups2 libdbus-1-3 libdbus-glib-1-2 \
     libxkbcommon0 libxcomposite1 libxdamage1 libxrandr2 \

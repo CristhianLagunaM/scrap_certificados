@@ -2,9 +2,12 @@ import os
 import asyncio
 import threading
 import zipfile
+from dataclasses import asdict, dataclass
+from pathlib import Path
 from queue import Empty, Queue
 from uuid import uuid4
-from flask import Flask, request, render_template, send_from_directory, Response, jsonify, stream_with_context
+from flask import Flask, request, render_template, send_file, send_from_directory, Response, jsonify, stream_with_context
+from werkzeug.utils import secure_filename
 
 # --- Certificados ---
 from utils.logger_sse import log, set_log_queue
@@ -12,6 +15,8 @@ from utils.loader import cargar_excel
 from utils.excel import generar_excel_coloreado
 from scrapers.scraper_minorias import scrap_minorias
 from scrapers.scraper_indigenas import scrap_indigenas
+from legalizacion.processor import ProcessingSummary as LegalizacionSummary
+from legalizacion.processor import process_excel as process_legalizacion_excel
 
 # --- Estudios Previos ---
 from utils.estudios_previos import EstudiosPreviosGenerator
@@ -22,9 +27,13 @@ from utils.estudios_previos import EstudiosPreviosGenerator
 APP_ROOT = os.path.dirname(os.path.abspath(__file__))
 UPLOAD_FOLDER = os.path.join(APP_ROOT, "uploads")
 OUTPUT_FOLDER = os.path.join(APP_ROOT, "salidas")
+LEGALIZACION_UPLOAD_FOLDER = os.path.join(UPLOAD_FOLDER, "legalizacion")
+LEGALIZACION_DEFAULT_OUTPUT = os.path.join(OUTPUT_FOLDER, "legalizacion")
 
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(OUTPUT_FOLDER, exist_ok=True)
+os.makedirs(LEGALIZACION_UPLOAD_FOLDER, exist_ok=True)
+os.makedirs(LEGALIZACION_DEFAULT_OUTPUT, exist_ok=True)
 
 # --------------------------------------------------------------
 # Estado SOLO para certificados
@@ -37,6 +46,7 @@ ESTADO_PROCESO = {
     "run_id": None,
     "log_queue": None,
 }
+LEGALIZACION_JOBS = {}
 
 # --------------------------------------------------------------
 # App Flask
@@ -44,6 +54,25 @@ ESTADO_PROCESO = {
 app = Flask(__name__)
 app.config["UPLOAD_FOLDER"] = UPLOAD_FOLDER
 app.config["MAX_CONTENT_LENGTH"] = 20 * 1024 * 1024
+
+
+@dataclass
+class LegalizacionJobState:
+    id: str
+    status: str = "pending"
+    current: int = 0
+    total: int = 0
+    message: str = "Esperando inicio"
+    logs: list[str] | None = None
+    error: str = ""
+    summary: dict[str, object] | None = None
+    zip_path: str = ""
+    report_path: str = ""
+
+    def to_dict(self) -> dict[str, object]:
+        data = asdict(self)
+        data["download_url"] = f"/legalizacion/jobs/{self.id}/download" if self.zip_path else ""
+        return data
 
 
 def limpiar_logs_pendientes():
@@ -146,6 +175,11 @@ def index():
 @app.route("/estudios-previos", methods=["GET"])
 def estudios_previos_view():
     return render_template("estudios_previos.html")
+
+
+@app.route("/legalizacion", methods=["GET"])
+def legalizacion_view():
+    return render_template("legalizacion.html")
 
 # --------------------------------------------------------------
 # SCRAPING CERTIFICADOS (NO TOCAR)
@@ -274,6 +308,60 @@ def procesar():
 
     return jsonify({"status": "procesando", "run_id": run_id})
 
+
+@app.route("/legalizacion/jobs", methods=["POST"])
+def legalizacion_create_job():
+    uploaded_file = request.files.get("excel")
+    if not uploaded_file or uploaded_file.filename == "":
+        return jsonify({"error": "Selecciona un archivo Excel."}), 400
+
+    suffix = Path(uploaded_file.filename).suffix.lower()
+    if suffix not in {".xlsx", ".xls"}:
+        return jsonify({"error": "El archivo debe ser .xlsx o .xls."}), 400
+
+    job_id = uuid4().hex
+    filename = secure_filename(uploaded_file.filename) or f"entrada{suffix}"
+    excel_path = os.path.join(LEGALIZACION_UPLOAD_FOLDER, f"{job_id}_{filename}")
+    uploaded_file.save(excel_path)
+
+    output_dir_text = request.form.get("output_dir", "").strip()
+    output_dir = Path(output_dir_text).expanduser() if output_dir_text else Path(LEGALIZACION_DEFAULT_OUTPUT)
+    if not output_dir.is_absolute():
+        output_dir = (Path(APP_ROOT) / output_dir).resolve()
+
+    state = LegalizacionJobState(
+        id=job_id,
+        status="running",
+        message="Archivo recibido. Iniciando procesamiento...",
+        logs=["Archivo recibido. Iniciando procesamiento..."],
+    )
+    LEGALIZACION_JOBS[job_id] = state
+
+    thread = threading.Thread(target=run_legalizacion_job, args=(job_id, excel_path, output_dir), daemon=True)
+    thread.start()
+    return jsonify({"job_id": job_id})
+
+
+@app.route("/legalizacion/jobs/<job_id>", methods=["GET"])
+def legalizacion_job_status(job_id):
+    state = LEGALIZACION_JOBS.get(job_id)
+    if not state:
+        return jsonify({"error": "Trabajo no encontrado."}), 404
+    return jsonify(state.to_dict())
+
+
+@app.route("/legalizacion/jobs/<job_id>/download", methods=["GET"])
+def legalizacion_download_zip(job_id):
+    state = LEGALIZACION_JOBS.get(job_id)
+    if not state or not state.zip_path:
+        return jsonify({"error": "ZIP no disponible."}), 404
+
+    zip_path = Path(state.zip_path)
+    if not zip_path.exists():
+        return jsonify({"error": "El archivo ZIP ya no existe en disco."}), 404
+
+    return send_file(zip_path, as_attachment=True, download_name=zip_path.name)
+
 # --------------------------------------------------------------
 # POST /estudios-previos (AISLADO)
 # --------------------------------------------------------------
@@ -299,6 +387,49 @@ def estudios_previos_post():
         "status": "ok",
         "url": f"/salidas/{zip_name}"
     })
+
+
+def run_legalizacion_job(job_id: str, excel_path: str, output_dir: Path) -> None:
+    state = LEGALIZACION_JOBS[job_id]
+
+    def progress(current: int, total: int, message: str) -> None:
+        state.current = current
+        state.total = total
+        state.message = message
+        if state.logs is not None:
+            state.logs.append(f"[{current}/{total}] {message}")
+
+    try:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        summary = process_legalizacion_excel(excel_path, str(output_dir), progress)
+        state.status = "done"
+        state.current = summary.total_rows
+        state.total = summary.total_rows
+        state.message = "Proceso finalizado"
+        state.zip_path = str(summary.zip_path)
+        state.report_path = str(summary.report_path)
+        state.summary = legalizacion_summary_to_dict(summary)
+        if state.logs is not None:
+            state.logs.append(f"ZIP generado en: {summary.zip_path}")
+            state.logs.append(f"Reporte generado en: {summary.report_path}")
+    except Exception as exc:
+        state.status = "error"
+        state.error = str(exc)
+        state.message = "Proceso detenido por error"
+        if state.logs is not None:
+            state.logs.append(str(exc))
+
+
+def legalizacion_summary_to_dict(summary: LegalizacionSummary) -> dict[str, object]:
+    return {
+        "total_rows": summary.total_rows,
+        "downloaded": summary.downloaded,
+        "not_downloaded": summary.not_downloaded,
+        "omitted": summary.omitted,
+        "zip_path": str(summary.zip_path),
+        "report_path": str(summary.report_path),
+        "work_dir": str(summary.work_dir),
+    }
 
 # --------------------------------------------------------------
 # MAIN

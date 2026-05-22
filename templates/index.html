@@ -2,69 +2,105 @@
 <html lang="es">
 <head>
   <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Procesador de Certificados</title>
 
   <link rel="stylesheet" href="{{ url_for('static', filename='css/app.css') }}">
-  <link rel="stylesheet"
-        href="https://cdnjs.cloudflare.com/ajax/libs/animate.css/4.1.1/animate.min.css"/>
 </head>
 
 <body>
-
-<!-- 🌙 Tema -->
-<button class="theme-toggle" id="theme-toggle">🌙</button>
-
-<!-- 🔀 Navegación -->
-<div style="text-align:center; margin-top:20px;">
-  <a href="/" class="btn-primary">🕷️ Certificados</a>
-  <a href="/estudios-previos" class="btn-primary" style="margin-left:10px;">
-    📄 Estudios Previos
-  </a>
-</div>
-
-<div class="main-container fade-in">
-
-  <!-- Fondo animado -->
-  <div class="hero-bg">
-    <span></span><span></span><span></span><span></span>
-    <span></span><span></span><span></span>
-  </div>
-
-  <header>
-    <h1>🕷️ Procesador de Certificados</h1>
-    <p>Sube el archivo Excel para iniciar el scraping.</p>
-  </header>
-
-  <!-- Formulario -->
-  <form id="form-procesar" enctype="multipart/form-data">
-    <section class="upload-row">
-      <div class="upload-card">
-        <h3>📊 Archivo Excel</h3>
-        <input type="file" name="archivo" accept=".xlsx" required />
+<div class="app-shell">
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-mark">UD</div>
+      <div class="brand-copy">
+        <strong>Gestión Documental</strong>
+        <span>Herramientas internas para certificados y soporte documental.</span>
       </div>
-    </section>
-
-    <button type="submit">🚀 Iniciar procesamiento</button>
-  </form>
-
-  <!-- Consola -->
-  <section style="margin-top:30px;">
-    <div id="status-panel" class="status-panel" style="display:none;">
-      <div class="status-spinner" aria-hidden="true"></div>
-      <div class="status-copy">
-        <strong id="status-title">Procesando</strong>
-        <p id="status-text">La solicitud sigue activa en el servidor.</p>
-      </div>
-      <div id="status-timer" class="status-timer">00:00</div>
     </div>
-    <h3>🖥️ Consola</h3>
-    <div id="logs-box"></div>
-  </section>
 
-  <footer>
-    Universidad Distrital 2025 ⚡
-  </footer>
+    <div>
+      <p class="sidebar-section-title">Módulos</p>
+      <nav class="sidebar-nav">
+        <a href="/" class="sidebar-link active">
+          <span class="sidebar-link-icon">🕷️</span>
+          <span class="sidebar-link-text">
+            <strong>Certificados</strong>
+            <span>Scraping y empaquetado</span>
+          </span>
+        </a>
+        <a href="/estudios-previos" class="sidebar-link">
+          <span class="sidebar-link-icon">📄</span>
+          <span class="sidebar-link-text">
+            <strong>Estudios Previos</strong>
+            <span>Generación documental</span>
+          </span>
+        </a>
+        <a href="/legalizacion" class="sidebar-link">
+          <span class="sidebar-link-icon">📁</span>
+          <span class="sidebar-link-text">
+            <strong>Legalización</strong>
+            <span>Clasificación y descarga</span>
+          </span>
+        </a>
+      </nav>
+    </div>
 
+    <div class="sidebar-note">
+      <strong>Ambiente institucional</strong>
+      <p>Interfaz unificada para los procesos operativos del equipo.</p>
+    </div>
+  </aside>
+
+  <main class="content fade-in">
+    <header class="page-header">
+      <div>
+        <span class="eyebrow">Módulo</span>
+        <h1>Procesador de Certificados</h1>
+        <p>Sube el archivo Excel para iniciar el scraping, monitorea la ejecución y descarga el consolidado final.</p>
+      </div>
+      <button class="theme-toggle" id="theme-toggle">🌙</button>
+    </header>
+
+    <div class="content-grid">
+      <section class="page-card">
+        <h2 class="page-card-title">Carga de archivo</h2>
+        <p class="page-card-subtitle">Este módulo procesa registros de certificados soportados por el scraping actual.</p>
+
+        <form id="form-procesar" enctype="multipart/form-data">
+          <section class="upload-row single">
+            <div class="upload-card">
+              <h3>Archivo Excel</h3>
+              <input type="file" name="archivo" accept=".xlsx" required />
+              <p>Formato esperado: libro Excel con la estructura definida para el proceso de certificados.</p>
+            </div>
+          </section>
+
+          <div class="actions-row">
+            <button type="submit">Iniciar procesamiento</button>
+          </div>
+        </form>
+      </section>
+
+      <section class="page-card">
+        <h2 class="page-card-title">Seguimiento</h2>
+        <p class="page-card-subtitle">Consulta el estado del proceso y los eventos emitidos por el servidor.</p>
+
+        <div id="status-panel" class="status-panel" style="display:none;">
+          <div class="status-spinner" aria-hidden="true"></div>
+          <div class="status-copy">
+            <strong id="status-title">Procesando</strong>
+            <p id="status-text">La solicitud sigue activa en el servidor.</p>
+          </div>
+          <div id="status-timer" class="status-timer">00:00</div>
+        </div>
+
+        <div id="logs-box" class="logs-box"></div>
+      </section>
+
+      <div class="footer">Universidad Distrital 2025</div>
+    </div>
+  </main>
 </div>
 
 <script src="{{ url_for('static', filename='js/theme-toggle.js') }}"></script>

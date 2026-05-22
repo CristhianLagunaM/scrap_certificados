@@ -2,47 +2,115 @@
 <html lang="es">
 <head>
   <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Generador de Estudios Previos</title>
 
   <link rel="stylesheet" href="{{ url_for('static', filename='css/app.css') }}">
-  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/animate.css/4.1.1/animate.min.css"/>
 </head>
 
 <body>
+<div class="app-shell">
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-mark">UD</div>
+      <div class="brand-copy">
+        <strong>Gestión Documental</strong>
+        <span>Herramientas internas para certificados y soporte documental.</span>
+      </div>
+    </div>
 
-<button class="theme-toggle" id="theme-toggle">🌙</button>
+    <div>
+      <p class="sidebar-section-title">Módulos</p>
+      <nav class="sidebar-nav">
+        <a href="/" class="sidebar-link">
+          <span class="sidebar-link-icon">🕷️</span>
+          <span class="sidebar-link-text">
+            <strong>Certificados</strong>
+            <span>Scraping y empaquetado</span>
+          </span>
+        </a>
+        <a href="/estudios-previos" class="sidebar-link active">
+          <span class="sidebar-link-icon">📄</span>
+          <span class="sidebar-link-text">
+            <strong>Estudios Previos</strong>
+            <span>Generación documental</span>
+          </span>
+        </a>
+        <a href="/legalizacion" class="sidebar-link">
+          <span class="sidebar-link-icon">📁</span>
+          <span class="sidebar-link-text">
+            <strong>Legalización</strong>
+            <span>Clasificación y descarga</span>
+          </span>
+        </a>
+      </nav>
+    </div>
 
-<!-- 🔀 Navegación -->
-<div style="text-align:center; margin-top:20px;">
-  <a href="/" class="btn btn-outline-primary me-2">🕷️ Certificados</a>
-  <a href="/estudios-previos" class="btn btn-primary">📄 Estudios Previos</a>
-</div>
+    <div class="sidebar-note">
+      <strong>Uso recomendado</strong>
+      <p>Prepara Excel y plantilla Word antes de iniciar la generación del paquete final.</p>
+    </div>
+  </aside>
 
-<div class="main-container fade-in">
-  <header>
-    <h1>📄 Generador de Estudios Previos</h1>
-    <p>Sube tu archivo Excel y tu plantilla Word.</p>
-  </header>
+  <main class="content fade-in">
+    <header class="page-header">
+      <div>
+        <span class="eyebrow">Módulo</span>
+        <h1>Generador de Estudios Previos</h1>
+        <p>Sube el archivo de datos y la plantilla institucional para generar los documentos en lote.</p>
+      </div>
+      <button class="theme-toggle" id="theme-toggle">🌙</button>
+    </header>
 
-  <form id="form-estudios" enctype="multipart/form-data">
-    <section class="upload-row">
-      <div class="upload-card">
-        <h3>📊 Archivo Excel</h3>
-        <input type="file" name="excel" accept=".xlsx" required />
+    <div class="content-grid">
+      <div class="split-grid">
+        <section class="page-card">
+          <h2 class="page-card-title">Archivos requeridos</h2>
+          <p class="page-card-subtitle">Se necesitan ambos insumos para producir el paquete documental.</p>
+
+          <form id="form-estudios" enctype="multipart/form-data">
+            <section class="upload-row">
+              <div class="upload-card">
+                <h3>Archivo Excel</h3>
+                <input type="file" name="excel" accept=".xlsx" required />
+                <p>Base de datos con la información de cada registro.</p>
+              </div>
+
+              <div class="upload-card">
+                <h3>Plantilla Word</h3>
+                <input type="file" name="template" accept=".docx" required />
+                <p>Documento base con el formato institucional vigente.</p>
+              </div>
+            </section>
+
+            <div class="actions-row">
+              <button type="submit">Generar documentos</button>
+            </div>
+          </form>
+        </section>
+
+        <aside class="page-card">
+          <h2 class="page-card-title">Consideraciones</h2>
+          <div class="meta-list">
+            <div class="meta-item">
+              <strong>Plantilla</strong>
+              <span>Usa un archivo `.docx` limpio y validado por el equipo.</span>
+            </div>
+            <div class="meta-item">
+              <strong>Datos</strong>
+              <span>Verifica columnas y filas antes de ejecutar para evitar reprocesos.</span>
+            </div>
+            <div class="meta-item">
+              <strong>Salida</strong>
+              <span>La respuesta descarga el archivo generado desde el servidor.</span>
+            </div>
+          </div>
+        </aside>
       </div>
 
-      <div class="upload-card">
-        <h3>📄 Plantilla Word</h3>
-        <input type="file" name="template" accept=".docx" required />
-      </div>
-    </section>
-
-    <button type="submit">🚀 Generar documentos</button>
-  </form>
-
-  <footer>
-    Universidad Distrital 2025 ⚡
-  </footer>
+      <div class="footer">Universidad Distrital 2025</div>
+    </div>
+  </main>
 </div>
 
 <script src="{{ url_for('static', filename='js/theme-toggle.js') }}"></script>
