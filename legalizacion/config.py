@@ -2,6 +2,13 @@ from pathlib import Path
 import os
 
 
+def int_env(name: str, default: int, minimum: int = 1) -> int:
+    try:
+        return max(minimum, int(os.getenv(name, str(default))))
+    except ValueError:
+        return default
+
+
 SHEET_NAME = "Worksheet"
 
 COLUMN_CREDENTIALS_MAIN = "NÚMERO DE CREDENCIAL(ES) (APARECEN EN EL COMPROBANTE DE INSCRIPCIÓN)"
@@ -55,11 +62,14 @@ NORMAL_CATEGORY_ENABLED = True
 
 MIN_TEXT_LENGTH_FOR_PDF_TEXT = 40
 DOWNLOAD_TIMEOUT_SECONDS = 45
-MAX_OCR_PAGES = 3
-PRIORITY_OCR_PAGES = 2
-OCR_DPI_SCALE = 2
-PROCESSING_WORKERS = max(2, int(os.getenv("LEGALIZACION_WORKERS", "6")))
-HTTP_POOL_SIZE = max(8, int(os.getenv("LEGALIZACION_HTTP_POOL_SIZE", "16")))
+MAX_OCR_PAGES = int_env("LEGALIZACION_MAX_OCR_PAGES", 0, minimum=0)
+PRIORITY_OCR_PAGES = int_env("LEGALIZACION_PRIORITY_OCR_PAGES", 1)
+OCR_DPI_SCALE = int_env("LEGALIZACION_OCR_DPI_SCALE", 2)
+OCR_VARIANT_LIMIT = int_env("LEGALIZACION_OCR_VARIANT_LIMIT", 1)
+OCR_PSM_MODES = tuple(mode.strip() for mode in os.getenv("LEGALIZACION_OCR_PSM_MODES", "6").split(",") if mode.strip()) or ("6",)
+OCR_WORKERS = int_env("LEGALIZACION_OCR_WORKERS", 4)
+PROCESSING_WORKERS = int_env("LEGALIZACION_WORKERS", 6)
+HTTP_POOL_SIZE = int_env("LEGALIZACION_HTTP_POOL_SIZE", 8)
 
 TEMP_DIR_NAME = "_temporales"
 WORK_DIR_PREFIX = "legalizacion_inscripcion_"

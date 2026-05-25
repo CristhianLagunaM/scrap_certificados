@@ -1,4 +1,5 @@
 import re
+import threading
 from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
@@ -11,12 +12,16 @@ from .text_utils import strip_accents
 from .validators import validate_credential
 
 
+OCR_SEMAPHORE = threading.BoundedSemaphore(config.OCR_WORKERS)
+
+
 @dataclass(frozen=True)
 class CredentialExtraction:
     raw_credentials: list[str]
     normalized_credentials: list[str]
     source: str
     text: str
+    transfer_inscription_type: str = ""
 
 
 def extract_credentials_from_pdf(path: Path) -> CredentialExtraction:
@@ -44,7 +49,7 @@ def extract_credentials_from_pdf(path: Path) -> CredentialExtraction:
                 if extraction:
                     return extraction
 
-            fallback_budget = max(len(document), config.MAX_OCR_PAGES)
+            fallback_budget = ocr_page_budget(len(document))
             for index, page, page_text in pages:
                 if index in ocr_processed:
                     continue
@@ -106,7 +111,7 @@ def find_credentials(text: str) -> list[str]:
     normalized_lines = [normalize_line(line) for line in text.splitlines() if normalize_line(line)]
 
     for index, line in enumerate(normalized_lines):
-        if "credencial" not in line:
+        if "credencial" not in line.lower():
             continue
 
         nearby = [line]
@@ -135,6 +140,34 @@ def find_credentials(text: str) -> list[str]:
     return credentials
 
 
+def find_transfer_inscription_type(text: str) -> str:
+    normalized_lines = [normalize_line(line) for line in text.splitlines() if normalize_line(line)]
+    for index, line in enumerate(normalized_lines):
+        if "tipo de inscripcion" not in line.lower():
+            continue
+
+        nearby = [line]
+        if index + 1 < len(normalized_lines):
+            nearby.append(normalized_lines[index + 1])
+        if index + 2 < len(normalized_lines):
+            nearby.append(normalized_lines[index + 2])
+
+        inscription_type = extract_transfer_type_from_segment(" ".join(nearby))
+        if inscription_type:
+            return inscription_type
+
+    return extract_transfer_type_from_segment(normalize_line(text))
+
+
+def extract_transfer_type_from_segment(text: str) -> str:
+    normalized = normalize_line(text).upper()
+    if "TRANSFERENCIA INTERNA" in normalized:
+        return "TRANSFERENCIA INTERNA"
+    if "TRANSFERENCIA EXTERNA" in normalized:
+        return "TRANSFERENCIA EXTERNA"
+    return ""
+
+
 def build_extraction(credentials: list[str], source: str, text: str) -> CredentialExtraction | None:
     normalized: list[str] = []
     for credential in credentials:
@@ -156,6 +189,7 @@ def build_extraction(credentials: list[str], source: str, text: str) -> Credenti
         normalized_credentials=normalized,
         source=source,
         text=text,
+        transfer_inscription_type=find_transfer_inscription_type(text),
     )
 
 
@@ -175,17 +209,9 @@ def extract_text_ocr_from_page(page: fitz.Page) -> str:
         raise RuntimeError("No se pudo extraer texto del PDF ni con OCR: pytesseract no esta instalado") from exc
 
     try:
-        matrix = fitz.Matrix(config.OCR_DPI_SCALE, config.OCR_DPI_SCALE)
-        pixmap = page.get_pixmap(matrix=matrix, alpha=False)
-        base_image = Image.open(BytesIO(pixmap.tobytes("png")))
-
-        for image in build_ocr_variants(base_image):
-            for psm in ("6", "11"):
-                text = pytesseract.image_to_string(
-                    image,
-                    lang="spa+eng",
-                    config=f"--psm {psm} --oem 1",
-                )
+        for image in build_ocr_images(page):
+            for psm in config.OCR_PSM_MODES:
+                text = run_tesseract(pytesseract, image, psm)
                 if text.strip():
                     return text
 
@@ -248,7 +274,8 @@ def normalize_numeric_ocr(text: str) -> str:
 
 def prioritize_ocr_pages(pages: list[tuple[int, fitz.Page, str]]) -> list[tuple[int, fitz.Page, str]]:
     priority: list[tuple[int, fitz.Page, str]] = []
-    fallback: list[tuple[int, fitz.Page, str]] = []
+    blank_pages: list[tuple[int, fitz.Page, str]] = []
+    other_pages: list[tuple[int, fitz.Page, str]] = []
 
     for index, page, page_text in pages:
         normalized = normalize_line(page_text).lower()
@@ -259,31 +286,41 @@ def prioritize_ocr_pages(pages: list[tuple[int, fitz.Page, str]]) -> list[tuple[
             priority.append((index, page, page_text))
             continue
         if len(normalized) < config.MIN_TEXT_LENGTH_FOR_PDF_TEXT:
-            fallback.append((index, page, page_text))
+            blank_pages.append((index, page, page_text))
+            continue
+        other_pages.append((index, page, page_text))
 
-    selected = priority[: config.PRIORITY_OCR_PAGES]
-    remaining_slots = max(config.MAX_OCR_PAGES - len(selected), 0)
-    if remaining_slots:
-        selected.extend(fallback[:remaining_slots])
-    return selected
+    ordered = priority[: config.PRIORITY_OCR_PAGES] + blank_pages + priority[config.PRIORITY_OCR_PAGES:] + other_pages
+    budget = ocr_page_budget(len(pages))
+    return ordered[:budget]
 
 
-def build_ocr_variants(image: Image.Image) -> list[Image.Image]:
-    width, height = image.size
-    top_region = image.crop((0, 0, width, max(int(height * 0.45), 1)))
-    focus_region = image.crop((
-        max(int(width * 0.04), 0),
-        max(int(height * 0.05), 0),
-        min(int(width * 0.92), width),
-        min(int(height * 0.38), height),
-    ))
+def ocr_page_budget(page_count: int) -> int:
+    if config.MAX_OCR_PAGES <= 0:
+        return page_count
+    return min(page_count, config.MAX_OCR_PAGES)
 
-    variants = [
-        preprocess_for_ocr(top_region),
-        preprocess_for_ocr(focus_region),
-        preprocess_for_ocr(image),
+
+def build_ocr_images(page: fitz.Page) -> list[Image.Image]:
+    matrix = fitz.Matrix(config.OCR_DPI_SCALE, config.OCR_DPI_SCALE)
+    images: list[Image.Image] = []
+
+    for clip in build_ocr_regions(page.rect)[: config.OCR_VARIANT_LIMIT]:
+        pixmap = page.get_pixmap(matrix=matrix, alpha=False, clip=clip)
+        image = Image.open(BytesIO(pixmap.tobytes("png")))
+        images.append(preprocess_for_ocr(image))
+
+    return images
+
+
+def build_ocr_regions(rect: fitz.Rect) -> list[fitz.Rect]:
+    width = rect.width
+    height = rect.height
+    return [
+        fitz.Rect(rect.x0, rect.y0, rect.x1, rect.y0 + height * 0.45),
+        fitz.Rect(rect.x0 + width * 0.04, rect.y0 + height * 0.05, rect.x0 + width * 0.92, rect.y0 + height * 0.38),
+        rect,
     ]
-    return variants
 
 
 def preprocess_for_ocr(image: Image.Image) -> Image.Image:
@@ -299,18 +336,10 @@ def extract_with_ocr(page: fitz.Page, page_text: str, page_number: int) -> tuple
     except ImportError as exc:
         raise RuntimeError("No se pudo extraer texto del PDF ni con OCR: pytesseract no esta instalado") from exc
 
-    matrix = fitz.Matrix(config.OCR_DPI_SCALE, config.OCR_DPI_SCALE)
-    pixmap = page.get_pixmap(matrix=matrix, alpha=False)
-    base_image = Image.open(BytesIO(pixmap.tobytes("png")))
-
     fallback_text = ""
-    for image in build_ocr_variants(base_image):
-        for psm in ("6", "11"):
-            text = pytesseract.image_to_string(
-                image,
-                lang="spa+eng",
-                config=f"--psm {psm} --oem 1",
-            )
+    for image in build_ocr_images(page):
+        for psm in config.OCR_PSM_MODES:
+            text = run_tesseract(pytesseract, image, psm)
             if not text.strip():
                 continue
             if not fallback_text:
@@ -326,3 +355,12 @@ def extract_with_ocr(page: fitz.Page, page_text: str, page_number: int) -> tuple
                 return extraction, text
 
     return None, fallback_text
+
+
+def run_tesseract(pytesseract_module: object, image: Image.Image, psm: str) -> str:
+    with OCR_SEMAPHORE:
+        return pytesseract_module.image_to_string(
+            image,
+            lang="spa+eng",
+            config=f"--psm {psm} --oem 1",
+        )

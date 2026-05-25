@@ -10,6 +10,13 @@ services:
       PYTHONUNBUFFERED: "1"
       TZ: "America/Bogota"
       SCRAPER_CONCURRENCY: "3"
+      LEGALIZACION_WORKERS: "6"
+      LEGALIZACION_OCR_WORKERS: "4"
+      LEGALIZACION_MAX_OCR_PAGES: "0"
+      LEGALIZACION_PRIORITY_OCR_PAGES: "1"
+      LEGALIZACION_OCR_VARIANT_LIMIT: "1"
+      LEGALIZACION_OCR_PSM_MODES: "6"
+      OMP_THREAD_LIMIT: "1"
     volumes:
       - ./uploads:/app/uploads
       - ./salidas:/app/salidas

@@ -153,13 +153,14 @@ def process_row(
         if not is_valid_url(url):
             raise RuntimeError("URL de documento invalida")
 
-        classification = classify(row.get(columns[config.COLUMN_PROGRAM]), row.get(columns[config.COLUMN_INSCRIPTION_TYPE]))
-        base_result.update(classification_to_report(classification))
-
         temp_pdf = temp_dir / f"fila_{uuid.uuid4().hex}.pdf"
         download_pdf(url, temp_pdf)
 
         extraction = extract_credentials_from_pdf(temp_pdf)
+        inscription_type = extraction.transfer_inscription_type or row.get(columns[config.COLUMN_INSCRIPTION_TYPE])
+        classification = classify(row.get(columns[config.COLUMN_PROGRAM]), inscription_type)
+        base_result.update(classification_to_report(classification))
+
         normalized_credentials = extraction.normalized_credentials
         raw_credentials = extraction.raw_credentials
         excel_credentials = get_excel_credentials(row, columns)
