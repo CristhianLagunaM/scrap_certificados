@@ -1,7 +1,7 @@
 import pandas as pd
 
 from legalizacion.classifier import classify, extract_program_code
-from legalizacion.pdf_credential_extractor import find_academic_program, find_credentials, find_transfer_inscription_type, prioritize_ocr_pages
+from legalizacion.pdf_credential_extractor import academic_program_has_code, find_academic_program, find_credentials, find_transfer_inscription_type, prioritize_ocr_pages
 from legalizacion.processor import build_report_dataframe, build_unique_filename, reconcile_credentials
 from legalizacion.validators import compare_credentials, normalize_excel_credentials, validate_credential
 
@@ -54,6 +54,9 @@ def test_academic_program_from_pdf_text():
         "03335"
     )
     assert find_academic_program(text) == "Opcion 1: 579 - INGENIERIA CIVIL (CICLOS PROPEDEUTICOS)"
+    assert find_academic_program("Opción 1: 375 - INGENIERIA MECANICA (CICLOS\nPrograma Académico:\nPROPEDEUTICOS)\nCredencial:\n17991") == "Opcion 1: 375 - INGENIERIA MECANICA (CICLOS PROPEDEUTICOS)"
+    assert academic_program_has_code("Opcion 1: 375 - INGENIERIA MECANICA (CICLOS PROPEDEUTICOS)")
+    assert not academic_program_has_code("PP MECANICA (CICLOS")
 
 
 def test_ocr_candidates_include_all_pages_by_default():

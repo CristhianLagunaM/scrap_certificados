@@ -162,6 +162,7 @@ def find_transfer_inscription_type(text: str) -> str:
 
 def find_academic_program(text: str) -> str:
     normalized_lines = [normalize_line(line) for line in text.splitlines() if normalize_line(line)]
+    fallback_program = ""
     for index, line in enumerate(normalized_lines):
         if "programa academico" not in line.lower():
             continue
@@ -172,10 +173,21 @@ def find_academic_program(text: str) -> str:
                 nearby.append(normalized_lines[index + offset])
 
         program = extract_academic_program_from_segment(" ".join(nearby))
-        if program:
+        if academic_program_has_code(program):
             return program
+        if program and not fallback_program:
+            fallback_program = program
 
-    return extract_academic_program_from_segment(normalize_line(text))
+    normalized_text = normalize_line(text)
+    option_program = extract_academic_program_option(normalized_text)
+    if option_program:
+        return option_program
+
+    program = extract_academic_program_from_segment(normalized_text)
+    if academic_program_has_code(program):
+        return program
+
+    return fallback_program or program
 
 
 def extract_academic_program_from_segment(text: str) -> str:
@@ -193,6 +205,28 @@ def extract_academic_program_from_segment(text: str) -> str:
         segment = segment[: next_label.start()]
 
     return segment.strip(" :-")
+
+
+def extract_academic_program_option(text: str) -> str:
+    match = re.search(r"\bopci[oó]n\s+\d+\s*:\s*\d{1,4}\s*-\s*", text, re.IGNORECASE)
+    if not match:
+        return ""
+
+    segment = text[match.start():].strip()
+    next_label = re.search(
+        r"\b(?:credencial|nombres y apellidos|tipo de documento|documento de identidad|fecha expedicion|correo electronico|telefono|medio por el cual|se presenta|tipo de inscripcion|nombre del colegio)\b\s*:?",
+        segment,
+        re.IGNORECASE,
+    )
+    if next_label and next_label.start() > 0:
+        segment = segment[: next_label.start()]
+
+    segment = re.sub(r"\bprograma academico\s*:?\s*", "", segment, flags=re.IGNORECASE)
+    return segment.strip(" :-")
+
+
+def academic_program_has_code(program: str) -> bool:
+    return bool(re.search(r"\bopci[oó]n\s+\d+\s*:\s*\d{1,4}\s*-", program, re.IGNORECASE) or re.match(r"^\d{1,4}\s*-", program))
 
 
 def extract_transfer_type_from_segment(text: str) -> str:
@@ -378,6 +412,7 @@ def extract_with_ocr(page: fitz.Page, page_text: str, page_number: int) -> tuple
         raise RuntimeError("No se pudo extraer texto del PDF ni con OCR: pytesseract no esta instalado") from exc
 
     fallback_text = ""
+    best_extraction: CredentialExtraction | None = None
     for image in build_ocr_images(page):
         for psm in config.OCR_PSM_MODES:
             text = run_tesseract(pytesseract, image, psm)
@@ -393,9 +428,45 @@ def extract_with_ocr(page: fitz.Page, page_text: str, page_number: int) -> tuple
                 combined_page_text,
             )
             if extraction:
-                return extraction, text
+                if academic_program_has_code(extraction.academic_program):
+                    return extraction, text
+                if best_extraction is None:
+                    best_extraction = extraction
+
+    if best_extraction:
+        enhanced = enhance_program_extraction(page, page_text, best_extraction.text, page_number, pytesseract)
+        if enhanced:
+            return enhanced, fallback_text
+        return best_extraction, fallback_text
 
     return None, fallback_text
+
+
+def enhance_program_extraction(
+    page: fitz.Page,
+    page_text: str,
+    ocr_text: str,
+    page_number: int,
+    pytesseract_module: object,
+) -> CredentialExtraction | None:
+    matrix = fitz.Matrix(max(config.OCR_DPI_SCALE, 3), max(config.OCR_DPI_SCALE, 3))
+    for clip in build_ocr_regions(page.rect)[: max(config.OCR_VARIANT_LIMIT, 2)]:
+        pixmap = page.get_pixmap(matrix=matrix, alpha=False, clip=clip)
+        image = preprocess_for_ocr(Image.open(BytesIO(pixmap.tobytes("png"))))
+        text = run_tesseract(pytesseract_module, image, "11")
+        if not text.strip():
+            continue
+
+        combined_page_text = "\n".join(chunk for chunk in [page_text, ocr_text, text] if chunk.strip())
+        extraction = build_extraction(
+            find_credentials(combined_page_text),
+            f"OCR pagina {page_number} (programa reforzado)",
+            combined_page_text,
+        )
+        if extraction and academic_program_has_code(extraction.academic_program):
+            return extraction
+
+    return None
 
 
 def run_tesseract(pytesseract_module: object, image: Image.Image, psm: str) -> str:

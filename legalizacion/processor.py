@@ -11,7 +11,7 @@ from typing import Callable
 import pandas as pd
 
 from . import config
-from .classifier import Classification, classify
+from .classifier import Classification, classify, extract_program_code
 from .downloader import download_pdf
 from .excel_reader import read_excel
 from .pdf_credential_extractor import extract_credentials_from_pdf
@@ -170,13 +170,18 @@ def process_row(
         inscription_type = extraction.transfer_inscription_type or row.get(columns[config.COLUMN_INSCRIPTION_TYPE])
         excel_program = value_as_text(row.get(columns[config.COLUMN_PROGRAM]))
         pdf_program = extraction.academic_program
-        program = pdf_program or excel_program
+        pdf_program_has_code = bool(extract_program_code(pdf_program))
+        program = pdf_program if pdf_program_has_code else excel_program
         base_result.update(
             {
                 "Programa PDF": pdf_program,
                 "Programa Excel control": excel_program,
                 "Programa usado para clasificación": program,
-                "Fuente programa": f"PDF ({extraction.source})" if pdf_program else ("Excel" if excel_program else "No identificado"),
+                "Fuente programa": (
+                    f"PDF ({extraction.source})"
+                    if pdf_program_has_code
+                    else ("Excel (programa PDF sin codigo)" if pdf_program and excel_program else ("Excel" if excel_program else "No identificado"))
+                ),
             }
         )
         classification = classify(program, inscription_type)
