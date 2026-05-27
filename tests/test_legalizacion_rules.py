@@ -1,17 +1,23 @@
+import pandas as pd
+
 from legalizacion.classifier import classify, extract_program_code
-from legalizacion.pdf_credential_extractor import find_credentials, find_transfer_inscription_type, prioritize_ocr_pages
-from legalizacion.processor import build_unique_filename, reconcile_credentials
+from legalizacion.pdf_credential_extractor import find_academic_program, find_credentials, find_transfer_inscription_type, prioritize_ocr_pages
+from legalizacion.processor import build_report_dataframe, build_unique_filename, reconcile_credentials
 from legalizacion.validators import compare_credentials, normalize_excel_credentials, validate_credential
 
 
 def test_extract_program_code():
     assert extract_program_code("(678) Ingenieria en Telematica (Ciclos Propedeuticos)") == "678"
+    assert extract_program_code("Opcion 1: 579 - INGENIERIA CIVIL (CICLOS PROPEDEUTICOS)") == "579"
+    assert extract_program_code("579 - INGENIERIA CIVIL (CICLOS PROPEDEUTICOS)") == "579"
     assert extract_program_code("Ingenieria Ambiental") == ""
 
 
 def test_profesionalizacion_priority():
     result = classify("(678) Ingenieria en Telematica (Ciclos Propedeuticos)", "DESPLAZADO")
     assert result.relative_folder == "PROFESIONALIZACION/Ingenierias tecnologica/678"
+    pdf_result = classify("Opcion 1: 579 - INGENIERIA CIVIL (CICLOS PROPEDEUTICOS)", "NORMAL")
+    assert pdf_result.relative_folder == "PROFESIONALIZACION/Ingenierias tecnologica/579"
 
 
 def test_cupo_especial_and_transferencia():
@@ -39,6 +45,17 @@ def test_transfer_inscription_type_from_pdf_text():
     assert find_transfer_inscription_type("Tipo de inscripción: INDIGENA") == ""
 
 
+def test_academic_program_from_pdf_text():
+    text = (
+        "Programa Académico:\n"
+        "Opción 1: 579 - INGENIERIA CIVIL (CICLOS\n"
+        "PROPEDEUTICOS)\n"
+        "Credencial:\n"
+        "03335"
+    )
+    assert find_academic_program(text) == "Opcion 1: 579 - INGENIERIA CIVIL (CICLOS PROPEDEUTICOS)"
+
+
 def test_ocr_candidates_include_all_pages_by_default():
     pages = [(index, None, "") for index in range(10)]
     assert len(prioritize_ocr_pages(pages)) == 10
@@ -60,3 +77,22 @@ def test_excel_comparison_and_repeated_names():
     assert build_unique_filename("501", "NORMAL/10", counts) == "501..pdf"
     assert build_unique_filename("501", "NORMAL/10", counts) == "501...pdf"
     assert build_unique_filename("501", "CUPO ESPECIAL/Indigenas", counts) == "501.pdf"
+
+
+def test_report_keeps_only_curated_columns():
+    dataframe = pd.DataFrame(
+        {
+            "Serial number": ["1"],
+            "Documento de identidad": ["123"],
+            "Fila Excel": ["2"],
+            "Estado procesamiento": ["Descargada"],
+            "Motivo": ["OK"],
+            "Credencial PDF": ["03335"],
+        }
+    )
+
+    report = build_report_dataframe(dataframe)
+
+    assert "Serial number" not in report.columns
+    assert "Documento de identidad" not in report.columns
+    assert list(report.columns) == ["Fila Excel", "Estado procesamiento", "Motivo", "Credencial PDF"]

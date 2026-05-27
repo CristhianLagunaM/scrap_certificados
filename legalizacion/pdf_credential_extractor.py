@@ -22,6 +22,7 @@ class CredentialExtraction:
     source: str
     text: str
     transfer_inscription_type: str = ""
+    academic_program: str = ""
 
 
 def extract_credentials_from_pdf(path: Path) -> CredentialExtraction:
@@ -159,6 +160,41 @@ def find_transfer_inscription_type(text: str) -> str:
     return extract_transfer_type_from_segment(normalize_line(text))
 
 
+def find_academic_program(text: str) -> str:
+    normalized_lines = [normalize_line(line) for line in text.splitlines() if normalize_line(line)]
+    for index, line in enumerate(normalized_lines):
+        if "programa academico" not in line.lower():
+            continue
+
+        nearby = [line]
+        for offset in range(1, 4):
+            if index + offset < len(normalized_lines):
+                nearby.append(normalized_lines[index + offset])
+
+        program = extract_academic_program_from_segment(" ".join(nearby))
+        if program:
+            return program
+
+    return extract_academic_program_from_segment(normalize_line(text))
+
+
+def extract_academic_program_from_segment(text: str) -> str:
+    match = re.search(r"programa academico\s*:?\s*", normalize_line(text), re.IGNORECASE)
+    if not match:
+        return ""
+
+    segment = text[match.end():].strip()
+    next_label = re.search(
+        r"\b(?:credencial|nombres y apellidos|tipo de documento|documento de identidad|fecha expedicion|correo electronico|telefono|medio por el cual|se presenta|tipo de inscripcion)\b\s*:?",
+        segment,
+        re.IGNORECASE,
+    )
+    if next_label:
+        segment = segment[: next_label.start()]
+
+    return segment.strip(" :-")
+
+
 def extract_transfer_type_from_segment(text: str) -> str:
     normalized = normalize_line(text).upper()
     if "TRANSFERENCIA INTERNA" in normalized:
@@ -190,6 +226,7 @@ def build_extraction(credentials: list[str], source: str, text: str) -> Credenti
         source=source,
         text=text,
         transfer_inscription_type=find_transfer_inscription_type(text),
+        academic_program=find_academic_program(text),
     )
 
 

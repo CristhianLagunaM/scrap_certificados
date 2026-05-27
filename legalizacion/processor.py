@@ -105,7 +105,7 @@ def process_excel(excel_path: str, output_dir: str, progress_callback: ProgressC
             if progress_callback:
                 progress_callback(completed, total, f"Fila {position} completada: {final_result['Motivo']}")
 
-    write_report(dataframe, report_path)
+    write_report(build_report_dataframe(dataframe), report_path)
     create_zip(documents_dir, report_path, zip_path)
 
     shutil.rmtree(temp_dir, ignore_errors=True)
@@ -121,6 +121,11 @@ def process_excel(excel_path: str, output_dir: str, progress_callback: ProgressC
     )
 
 
+def build_report_dataframe(dataframe: pd.DataFrame) -> pd.DataFrame:
+    columns = [column for column in config.REPORT_COLUMNS if column in dataframe.columns]
+    return dataframe.loc[:, columns].copy()
+
+
 def process_row(
     index: int,
     row: pd.Series,
@@ -131,6 +136,7 @@ def process_row(
     url = value_as_text(row.get(columns[config.COLUMN_PDF_URL]))
     temp_pdf: Path | None = None
     base_result = {
+        "Fila Excel": str(index + 2),
         "Estado procesamiento": "No descargada",
         "Motivo": "",
         "Credencial PDF": "",
@@ -138,6 +144,10 @@ def process_row(
         "Fuente credencial": "No identificada",
         "Credencial Excel control": "",
         "Comparación credencial Excel": "No se pudo identificar credencial en PDF",
+        "Programa PDF": "",
+        "Programa Excel control": value_as_text(row.get(columns[config.COLUMN_PROGRAM])),
+        "Programa usado para clasificación": "",
+        "Fuente programa": "No identificado",
         "Código programa": "",
         "Categoría destino": "",
         "Subcategoría destino": "",
@@ -158,7 +168,18 @@ def process_row(
 
         extraction = extract_credentials_from_pdf(temp_pdf)
         inscription_type = extraction.transfer_inscription_type or row.get(columns[config.COLUMN_INSCRIPTION_TYPE])
-        classification = classify(row.get(columns[config.COLUMN_PROGRAM]), inscription_type)
+        excel_program = value_as_text(row.get(columns[config.COLUMN_PROGRAM]))
+        pdf_program = extraction.academic_program
+        program = pdf_program or excel_program
+        base_result.update(
+            {
+                "Programa PDF": pdf_program,
+                "Programa Excel control": excel_program,
+                "Programa usado para clasificación": program,
+                "Fuente programa": f"PDF ({extraction.source})" if pdf_program else ("Excel" if excel_program else "No identificado"),
+            }
+        )
+        classification = classify(program, inscription_type)
         base_result.update(classification_to_report(classification))
 
         normalized_credentials = extraction.normalized_credentials

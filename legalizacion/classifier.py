@@ -16,6 +16,14 @@ class Classification:
 def extract_program_code(program_value: object) -> str:
     text = "" if program_value is None else str(program_value).strip()
     match = re.match(r"^\((\d+)\)", text)
+    if match:
+        return match.group(1)
+
+    match = re.search(r"\bopci[oó]n\s+\d+\s*:\s*(\d{1,4})\s*-", text, re.IGNORECASE)
+    if match:
+        return match.group(1)
+
+    match = re.match(r"^(\d{1,4})\s*-", text)
     return match.group(1) if match else ""
 
 

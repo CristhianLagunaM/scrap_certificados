@@ -26,6 +26,7 @@ REQUIRED_COLUMNS = [
 ]
 
 REPORT_COLUMNS = [
+    "Fila Excel",
     "Estado procesamiento",
     "Motivo",
     "Credencial PDF",
@@ -33,6 +34,10 @@ REPORT_COLUMNS = [
     "Fuente credencial",
     "Credencial Excel control",
     "Comparación credencial Excel",
+    "Programa PDF",
+    "Programa Excel control",
+    "Programa usado para clasificación",
+    "Fuente programa",
     "Código programa",
     "Categoría destino",
     "Subcategoría destino",
