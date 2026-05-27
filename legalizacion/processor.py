@@ -52,7 +52,7 @@ def process_excel(excel_path: str, output_dir: str, progress_callback: ProgressC
     dataframe = excel_data.dataframe.copy()
     columns = excel_data.columns
 
-    timestamp = datetime.now().strftime("%Y-%m-%d_%H%M")
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S_%f")
     output_root = Path(output_dir).resolve()
     work_dir = output_root / f"{config.WORK_DIR_PREFIX}{timestamp}"
     documents_dir = work_dir / "documentos"
@@ -238,11 +238,7 @@ def reconcile_credentials(pdf_credentials: list[str], excel_credentials: list[st
         return pdf_credentials
 
     cleaned = remove_redundant_short_credentials(pdf_credentials)
-    if not excel_credentials:
-        return cleaned
-
-    matched = [credential for credential in cleaned if credential in excel_credentials]
-    return matched or cleaned
+    return cleaned
 
 
 def remove_redundant_short_credentials(credentials: list[str]) -> list[str]:

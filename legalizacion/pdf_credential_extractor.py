@@ -230,12 +230,12 @@ def build_credential_pattern() -> re.Pattern[str]:
 
 
 def trim_after_keyword(text: str) -> str:
-    match = re.search(r"credencial(?:es|\(es\))?", text, re.IGNORECASE)
+    match = re.search(r"credencial(?:es|\(es\))?\s*[:#=\-]?\s*", text, re.IGNORECASE)
     if not match:
         return text
 
     segment = text[match.end():]
-    next_label = re.search(r"\b[a-z][a-z0-9 .()/-]{2,40}:", segment, re.IGNORECASE)
+    next_label = re.search(r"\b[a-z][a-z0-9 .()/-]{2,90}:", segment, re.IGNORECASE)
     if next_label:
         segment = segment[:next_label.start()]
     return segment
@@ -243,9 +243,13 @@ def trim_after_keyword(text: str) -> str:
 
 def extract_digit_candidates(text: str) -> list[str]:
     candidates: list[str] = []
-    normalized = normalize_numeric_ocr(text)
-    for match in re.finditer(r"(?<!\d)(?:[0-9][\s.\-_:;]?){1,5}(?!\d)", normalized):
-        token = re.sub(r"[\s.\-_:;]", "", match.group(0))
+    normalized = strip_accents(text or "")
+    candidate_pattern = re.compile(r"(?<![a-z0-9])(?:[0-9OoQDIliSsB][\s.\-_:;]?){1,5}(?![a-z0-9])")
+    for match in candidate_pattern.finditer(normalized):
+        raw_token = re.sub(r"[\s.\-_:;]", "", match.group(0))
+        if not re.search(r"\d", raw_token):
+            continue
+        token = normalize_numeric_ocr(raw_token)
         if 1 <= len(token) <= 5:
             candidates.append(token)
     return candidates

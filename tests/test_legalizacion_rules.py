@@ -29,6 +29,8 @@ def test_credentials_from_text():
     assert find_credentials("Credencial: 1031803905\nDocumento: 999") == []
     assert find_credentials("Credencial: O6846") == ["06846"]
     assert find_credentials("Credencial: 0684 6") == ["06846"]
+    assert find_credentials("Credencial:\nPrograma Academico:\nCredencial:\nNombre del colegio donde culmino el grado 11:") == []
+    assert find_credentials("Credencial: 15123\nPrograma Academico: X\nCredencial: 15124") == ["15123", "15124"]
 
 
 def test_transfer_inscription_type_from_pdf_text():
@@ -51,7 +53,7 @@ def test_validate_credentials():
 def test_excel_comparison_and_repeated_names():
     assert normalize_excel_credentials("00443 ; 00444") == ["00443", "00444"]
     assert compare_credentials(["02120"], ["2120"]) == "Difiere de Excel"
-    assert reconcile_credentials(["06366", "0"], ["06366"]) == ["06366"]
+    assert reconcile_credentials(["15123", "15124", "15125"], ["15125"]) == ["15123", "15124", "15125"]
     assert reconcile_credentials(["06366", "0"], []) == ["06366"]
     counts = {}
     assert build_unique_filename("501", "NORMAL/10", counts) == "501.pdf"
