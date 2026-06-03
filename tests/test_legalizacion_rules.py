@@ -3,6 +3,8 @@ import pandas as pd
 from legalizacion.classifier import classify, extract_program_code
 from legalizacion.pdf_credential_extractor import academic_program_has_code, find_academic_program, find_credentials, find_transfer_inscription_type, prioritize_ocr_pages
 from legalizacion.processor import build_report_dataframe, build_unique_filename, reconcile_credentials
+from legalizacion.soportes_processor import build_filename as build_support_filename
+from legalizacion.soportes_processor import classify_support, has_inscription_receipt
 from legalizacion.validators import compare_credentials, normalize_excel_credentials, validate_credential
 
 
@@ -99,3 +101,26 @@ def test_report_keeps_only_curated_columns():
     assert "Serial number" not in report.columns
     assert "Documento de identidad" not in report.columns
     assert list(report.columns) == ["Fila Excel", "Estado procesamiento", "Motivo", "Credencial PDF"]
+
+
+def test_support_phrase_classification():
+    assert classify_support("Certifica la Unidad para las víctimas").category == "Desplazados"
+    assert classify_support("4068923(RUV) Incluido Desplazamiento forzado").category == "Desplazados"
+    assert classify_support("Unidad para la Atención y Reparación Integral a las Víctimas").category == "Desplazados"
+    assert classify_support("Asuntos indigenas rom y minorias del ministerio del interior").category == "Indigenas"
+    assert classify_support("Firma el Alcalde Municipal de la entidad").category == "Ley 1084"
+    assert classify_support("Director local de educacion certifica mejor bachiller").category == "Mejor bachiller"
+    assert classify_support("Comunidades negras afrocolombianas raizales y palenqueras del ministerio del interior").category == "Negritudes"
+    assert classify_support("Agencia para la Reincorporacion y la normalización").category == "Programa para la paz"
+    assert classify_support("Documento sin frase configurada") is None
+    assert classify_support("el puntaje supero al 58 de los estudiantes a ruvel racional") is None
+
+
+def test_support_pending_filename_and_receipt_detection():
+    pending_counts = {}
+    filename_counts = {}
+    assert build_support_filename("Desplazados", [], filename_counts, pending_counts) == "pendiente_credencial_1.pdf"
+    assert build_support_filename("Desplazados", [], filename_counts, pending_counts) == "pendiente_credencial_2.pdf"
+    assert build_support_filename("Desplazados", ["00443"], filename_counts, pending_counts) == "00443.pdf"
+    assert build_support_filename("Desplazados", ["00443"], filename_counts, pending_counts) == "00443..pdf"
+    assert has_inscription_receipt("COMPROBANTE DE INSCRIPCIÓN\nCredencial: 00443")

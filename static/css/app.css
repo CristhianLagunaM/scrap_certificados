@@ -324,6 +324,49 @@ body:not(.light-mode) .sidebar {
   font-size: 1rem;
 }
 
+.mode-selector {
+  display: grid;
+  gap: 10px;
+  margin: 0 0 18px;
+  padding: 0;
+  border: 0;
+}
+
+.mode-selector legend {
+  margin-bottom: 8px;
+  color: var(--accent-strong);
+  font-weight: 700;
+}
+
+.mode-selector label {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 12px;
+  align-items: center;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--bg-subtle);
+  cursor: pointer;
+}
+
+.mode-selector input {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--accent);
+}
+
+.mode-selector strong,
+.mode-selector small {
+  display: block;
+}
+
+.mode-selector small {
+  margin-top: 3px;
+  color: var(--text-soft);
+  line-height: 1.35;
+}
+
 .upload-card p,
 .info-card p {
   margin: 8px 0 0;
@@ -395,6 +438,15 @@ button:disabled {
   background: transparent;
   color: var(--accent);
   border: 1px solid var(--border-strong);
+}
+
+.btn-danger {
+  background: var(--danger);
+  color: #ffffff;
+}
+
+.btn-danger:hover {
+  background: #743232;
 }
 
 .btn-download {

@@ -15,8 +15,11 @@ from utils.loader import cargar_excel
 from utils.excel import generar_excel_coloreado
 from scrapers.scraper_minorias import scrap_minorias
 from scrapers.scraper_indigenas import scrap_indigenas
+from legalizacion.cancellation import ProcessingCancelled
 from legalizacion.processor import ProcessingSummary as LegalizacionSummary
 from legalizacion.processor import process_excel as process_legalizacion_excel
+from legalizacion.soportes_processor import ProcessingSummary as LegalizacionSoportesSummary
+from legalizacion.soportes_processor import process_excel as process_legalizacion_soportes_excel
 
 # --- Estudios Previos ---
 from utils.estudios_previos import EstudiosPreviosGenerator
@@ -68,10 +71,12 @@ class LegalizacionJobState:
     summary: dict[str, object] | None = None
     zip_path: str = ""
     report_path: str = ""
+    cancel_requested: bool = False
 
     def to_dict(self) -> dict[str, object]:
         data = asdict(self)
         data["download_url"] = f"/legalizacion/jobs/{self.id}/download" if self.zip_path else ""
+        data["cancel_url"] = f"/legalizacion/jobs/{self.id}/cancel"
         return data
 
 
@@ -319,6 +324,10 @@ def legalizacion_create_job():
     if suffix not in {".xlsx", ".xls"}:
         return jsonify({"error": "El archivo debe ser .xlsx o .xls."}), 400
 
+    mode = request.form.get("mode", "inscripcion").strip().lower()
+    if mode not in {"inscripcion", "soportes"}:
+        return jsonify({"error": "Modo de procesamiento no válido."}), 400
+
     job_id = uuid4().hex
     filename = secure_filename(uploaded_file.filename) or f"entrada{suffix}"
     excel_path = os.path.join(LEGALIZACION_UPLOAD_FOLDER, f"{job_id}_{filename}")
@@ -337,7 +346,7 @@ def legalizacion_create_job():
     )
     LEGALIZACION_JOBS[job_id] = state
 
-    thread = threading.Thread(target=run_legalizacion_job, args=(job_id, excel_path, output_dir), daemon=True)
+    thread = threading.Thread(target=run_legalizacion_job, args=(job_id, excel_path, output_dir, mode), daemon=True)
     thread.start()
     return jsonify({"job_id": job_id})
 
@@ -347,6 +356,23 @@ def legalizacion_job_status(job_id):
     state = LEGALIZACION_JOBS.get(job_id)
     if not state:
         return jsonify({"error": "Trabajo no encontrado."}), 404
+    return jsonify(state.to_dict())
+
+
+@app.route("/legalizacion/jobs/<job_id>/cancel", methods=["POST"])
+def legalizacion_cancel_job(job_id):
+    state = LEGALIZACION_JOBS.get(job_id)
+    if not state:
+        return jsonify({"error": "Trabajo no encontrado."}), 404
+
+    if state.status not in {"running", "cancelling"}:
+        return jsonify(state.to_dict())
+
+    state.cancel_requested = True
+    state.status = "cancelling"
+    state.message = "Cancelación solicitada. Deteniendo filas pendientes..."
+    if state.logs is not None:
+        state.logs.append("Cancelación solicitada por el usuario.")
     return jsonify(state.to_dict())
 
 
@@ -389,7 +415,7 @@ def estudios_previos_post():
     })
 
 
-def run_legalizacion_job(job_id: str, excel_path: str, output_dir: Path) -> None:
+def run_legalizacion_job(job_id: str, excel_path: str, output_dir: Path, mode: str) -> None:
     state = LEGALIZACION_JOBS[job_id]
 
     def progress(current: int, total: int, message: str) -> None:
@@ -399,9 +425,15 @@ def run_legalizacion_job(job_id: str, excel_path: str, output_dir: Path) -> None
         if state.logs is not None:
             state.logs.append(f"[{current}/{total}] {message}")
 
+    def should_cancel() -> bool:
+        return state.cancel_requested
+
     try:
         output_dir.mkdir(parents=True, exist_ok=True)
-        summary = process_legalizacion_excel(excel_path, str(output_dir), progress)
+        if mode == "soportes":
+            summary = process_legalizacion_soportes_excel(excel_path, str(output_dir), progress, should_cancel)
+        else:
+            summary = process_legalizacion_excel(excel_path, str(output_dir), progress, should_cancel)
         state.status = "done"
         state.current = summary.total_rows
         state.total = summary.total_rows
@@ -412,6 +444,12 @@ def run_legalizacion_job(job_id: str, excel_path: str, output_dir: Path) -> None
         if state.logs is not None:
             state.logs.append(f"ZIP generado en: {summary.zip_path}")
             state.logs.append(f"Reporte generado en: {summary.report_path}")
+    except ProcessingCancelled as exc:
+        state.status = "cancelled"
+        state.error = str(exc)
+        state.message = "Proceso cancelado"
+        if state.logs is not None:
+            state.logs.append(str(exc))
     except Exception as exc:
         state.status = "error"
         state.error = str(exc)
@@ -420,7 +458,7 @@ def run_legalizacion_job(job_id: str, excel_path: str, output_dir: Path) -> None
             state.logs.append(str(exc))
 
 
-def legalizacion_summary_to_dict(summary: LegalizacionSummary) -> dict[str, object]:
+def legalizacion_summary_to_dict(summary: LegalizacionSummary | LegalizacionSoportesSummary) -> dict[str, object]:
     return {
         "total_rows": summary.total_rows,
         "downloaded": summary.downloaded,

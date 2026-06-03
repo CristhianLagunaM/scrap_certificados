@@ -8,13 +8,17 @@ const legalizacionLogs = document.getElementById("legalizacion-logs");
 const legalizacionSummary = document.getElementById("legalizacion-summary");
 const legalizacionDownload = document.getElementById("legalizacion-download");
 const legalizacionDownloadHint = document.getElementById("legalizacion-download-hint");
+const legalizacionCancel = document.getElementById("legalizacion-cancel");
 
 let legalizacionPollTimer = null;
+let legalizacionCurrentJobId = null;
 
 legalizacionForm.addEventListener("submit", async (event) => {
   event.preventDefault();
 
   legalizacionSubmit.disabled = true;
+  legalizacionCancel.disabled = false;
+  legalizacionCancel.classList.add("hidden");
   legalizacionSummary.classList.add("hidden");
   legalizacionDownload.classList.add("hidden");
   legalizacionDownloadHint.textContent = "Preparando procesamiento. La descarga se habilitará al finalizar.";
@@ -39,7 +43,33 @@ legalizacionForm.addEventListener("submit", async (event) => {
     return;
   }
 
+  legalizacionCurrentJobId = payload.job_id;
+  legalizacionCancel.classList.remove("hidden");
   pollLegalizacionJob(payload.job_id);
+});
+
+legalizacionCancel.addEventListener("click", async () => {
+  if (!legalizacionCurrentJobId || legalizacionCancel.disabled) {
+    return;
+  }
+
+  legalizacionCancel.disabled = true;
+  legalizacionTitle.textContent = "Cancelando";
+  legalizacionText.textContent = "Solicitando detener el proceso.";
+  legalizacionLogs.textContent += "Solicitando cancelación...\n";
+
+  const response = await fetch(`/legalizacion/jobs/${legalizacionCurrentJobId}/cancel`, {
+    method: "POST",
+  });
+  const payload = await response.json().catch(() => ({}));
+
+  if (!response.ok) {
+    legalizacionCancel.disabled = false;
+    legalizacionLogs.textContent += `${payload.error || "No fue posible cancelar el proceso."}\n`;
+    return;
+  }
+
+  renderLegalizacionState(payload);
 });
 
 function pollLegalizacionJob(jobId) {
@@ -52,10 +82,12 @@ function pollLegalizacionJob(jobId) {
     const state = await response.json().catch(() => ({}));
     renderLegalizacionState(state);
 
-    if (state.status === "done" || state.status === "error") {
+    if (state.status === "done" || state.status === "error" || state.status === "cancelled") {
       clearInterval(legalizacionPollTimer);
       legalizacionPollTimer = null;
       legalizacionSubmit.disabled = false;
+      legalizacionCancel.classList.add("hidden");
+      legalizacionCurrentJobId = null;
     }
   };
 
@@ -76,11 +108,31 @@ function renderLegalizacionState(state) {
     legalizacionLogs.scrollTop = legalizacionLogs.scrollHeight;
   }
 
+  if (state.status === "running") {
+    legalizacionCancel.disabled = false;
+    legalizacionCancel.classList.remove("hidden");
+  }
+
+  if (state.status === "cancelling") {
+    legalizacionCancel.disabled = true;
+    legalizacionCancel.classList.remove("hidden");
+    legalizacionDownloadHint.textContent = "Cancelación solicitada. El proceso se detendrá al cerrar las filas en curso.";
+  }
+
   if (state.status === "error") {
     legalizacionSummary.classList.remove("hidden");
     legalizacionSummary.innerHTML = `<strong>Error:</strong> ${escapeHtml(state.error || "Proceso detenido")}`;
     legalizacionDownload.classList.add("hidden");
     legalizacionDownloadHint.textContent = "No se generó ZIP descargable para esta ejecución.";
+    return;
+  }
+
+  if (state.status === "cancelled") {
+    legalizacionSummary.classList.remove("hidden");
+    legalizacionSummary.innerHTML = `<strong>Proceso cancelado:</strong> ${escapeHtml(state.error || "Cancelado por el usuario")}`;
+    legalizacionDownload.classList.add("hidden");
+    legalizacionCancel.classList.add("hidden");
+    legalizacionDownloadHint.textContent = "Proceso detenido. No se generó ZIP final para esta ejecución.";
     return;
   }
 

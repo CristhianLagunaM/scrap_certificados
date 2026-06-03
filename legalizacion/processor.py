@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import shutil
 import uuid
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -11,6 +11,7 @@ from typing import Callable
 import pandas as pd
 
 from . import config
+from .cancellation import CancellationCallback, ProcessingCancelled
 from .classifier import Classification, classify, extract_program_code
 from .downloader import download_pdf
 from .excel_reader import read_excel
@@ -47,7 +48,12 @@ class RowProcessingResult:
     classification: Classification | None = None
 
 
-def process_excel(excel_path: str, output_dir: str, progress_callback: ProgressCallback | None = None) -> ProcessingSummary:
+def process_excel(
+    excel_path: str,
+    output_dir: str,
+    progress_callback: ProgressCallback | None = None,
+    should_cancel: CancellationCallback | None = None,
+) -> ProcessingSummary:
     excel_data = read_excel(excel_path)
     dataframe = excel_data.dataframe.copy()
     columns = excel_data.columns
@@ -80,30 +86,53 @@ def process_excel(excel_path: str, output_dir: str, progress_callback: ProgressC
         progress_callback(0, total, f"Iniciando procesamiento concurrente con {workers} workers")
 
     completed = 0
-    with ThreadPoolExecutor(max_workers=workers) as executor:
-        future_map = {
-            executor.submit(process_row, index, row, columns, temp_dir): (position, index)
-            for position, (index, row) in enumerate(rows, start=1)
-        }
+    executor = ThreadPoolExecutor(max_workers=workers)
+    future_map = {
+        executor.submit(process_row, index, row, columns, temp_dir): (position, index)
+        for position, (index, row) in enumerate(rows, start=1)
+    }
+    pending = set(future_map)
 
-        for future in as_completed(future_map):
-            position, index = future_map[future]
-            row_result = future.result()
-            final_result = finalize_row_result(row_result, documents_dir, filename_counts)
+    try:
+        while pending:
+            if should_cancel and should_cancel():
+                cancel_pending_futures(pending)
+                raise ProcessingCancelled()
 
-            for key, value in final_result.items():
-                dataframe.at[index, key] = value
+            done, pending = wait(pending, timeout=0.5, return_when=FIRST_COMPLETED)
+            if not done:
+                continue
 
-            if final_result["Estado procesamiento"] == "Descargada":
-                downloaded += 1
-            elif final_result["Estado procesamiento"] == "Omitida":
-                omitted += 1
-            else:
-                not_downloaded += 1
+            for future in done:
+                position, index = future_map[future]
+                row_result = future.result()
 
-            completed += 1
-            if progress_callback:
-                progress_callback(completed, total, f"Fila {position} completada: {final_result['Motivo']}")
+                if should_cancel and should_cancel():
+                    cleanup_row_result(row_result)
+                    cancel_pending_futures(pending)
+                    raise ProcessingCancelled()
+
+                final_result = finalize_row_result(row_result, documents_dir, filename_counts)
+
+                for key, value in final_result.items():
+                    dataframe.at[index, key] = value
+
+                if final_result["Estado procesamiento"] == "Descargada":
+                    downloaded += 1
+                elif final_result["Estado procesamiento"] == "Omitida":
+                    omitted += 1
+                else:
+                    not_downloaded += 1
+
+                completed += 1
+                if progress_callback:
+                    excel_row = final_result.get("Fila Excel", str(index + 2))
+                    progress_callback(completed, total, f"Fila Excel {excel_row} (registro {position}) completada: {final_result['Motivo']}")
+    except ProcessingCancelled:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        raise
+    finally:
+        executor.shutdown(wait=True, cancel_futures=True)
 
     write_report(build_report_dataframe(dataframe), report_path)
     create_zip(documents_dir, report_path, zip_path)
@@ -124,6 +153,16 @@ def process_excel(excel_path: str, output_dir: str, progress_callback: ProgressC
 def build_report_dataframe(dataframe: pd.DataFrame) -> pd.DataFrame:
     columns = [column for column in config.REPORT_COLUMNS if column in dataframe.columns]
     return dataframe.loc[:, columns].copy()
+
+
+def cancel_pending_futures(futures: set[object]) -> None:
+    for future in futures:
+        future.cancel()
+
+
+def cleanup_row_result(row_result: RowProcessingResult) -> None:
+    if row_result.temp_pdf_path is not None and row_result.temp_pdf_path.exists():
+        row_result.temp_pdf_path.unlink(missing_ok=True)
 
 
 def process_row(

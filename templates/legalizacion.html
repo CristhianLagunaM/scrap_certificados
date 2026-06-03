@@ -57,7 +57,7 @@
       <div>
         <span class="eyebrow">Módulo</span>
         <h1>Legalización de Inscripción</h1>
-        <p>Sube el Excel, procesa las URLs de soporte y descarga el ZIP final con clasificación y reporte en un flujo único.</p>
+        <p>Sube el Excel, procesa las URLs de soporte y descarga el ZIP final con clasificación, PDFs y reporte en un flujo único.</p>
       </div>
       <button class="theme-toggle" id="theme-toggle">🌙</button>
     </header>
@@ -66,19 +66,38 @@
       <div class="split-grid">
         <section class="page-card">
           <h2 class="page-card-title">Carga de archivo</h2>
-          <p class="page-card-subtitle">Selecciona el Excel fuente. El sistema usará automáticamente la ruta de salida configurada en el servidor.</p>
+          <p class="page-card-subtitle">Selecciona el Excel fuente y el tipo de legalización que quieres procesar.</p>
 
           <form id="form-legalizacion" enctype="multipart/form-data">
+            <fieldset class="mode-selector">
+              <legend>Tipo de proceso</legend>
+              <label>
+                <input type="radio" name="mode" value="inscripcion" checked />
+                <span>
+                  <strong>Inscripción</strong>
+                  <small>Clasifica por tipo de inscripción y programa académico.</small>
+                </span>
+              </label>
+              <label>
+                <input type="radio" name="mode" value="soportes" />
+                <span>
+                  <strong>Soportes por frases</strong>
+                  <small>Lee la columna URL procesada y clasifica por entidad o certificación.</small>
+                </span>
+              </label>
+            </fieldset>
+
             <section class="upload-row single">
               <div class="upload-card">
                 <h3>Archivo Excel</h3>
                 <input type="file" name="excel" accept=".xlsx,.xls" required />
-                <p>Formatos aceptados: `.xlsx` y `.xls`. Usa la plantilla estándar del módulo para evitar rechazos.</p>
+                <p>Para soportes por frases se requiere la columna `URL procesada`. Para inscripción se usa la plantilla estándar del módulo.</p>
               </div>
             </section>
 
             <div class="actions-row">
               <button id="legalizacion-submit" type="submit">Iniciar procesamiento</button>
+              <button id="legalizacion-cancel" type="button" class="btn-danger hidden">Frenar proceso</button>
               <a id="legalizacion-download" class="btn-primary btn-download hidden download-link" href="#">Descargar ZIP final</a>
             </div>
           </form>
@@ -93,11 +112,11 @@
             </div>
             <div class="meta-item">
               <strong>Proceso</strong>
-              <span>Descarga, OCR si aplica, validación de credenciales y clasificación por carpeta.</span>
+              <span>Descarga, OCR si aplica, extracción de credenciales y clasificación por carpeta.</span>
             </div>
             <div class="meta-item">
               <strong>Salida</strong>
-              <span>ZIP final con documentos organizados y reporte Excel de trazabilidad.</span>
+              <span>ZIP final con documentos organizados y reporte Excel de trazabilidad. Los soportes sin credencial quedan como pendiente_credencial_N.</span>
             </div>
             <div class="meta-item">
               <strong>Experiencia</strong>
