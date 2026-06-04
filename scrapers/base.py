@@ -2,6 +2,7 @@ import os
 import re
 import shutil
 import asyncio
+import unicodedata
 from typing import Awaitable, Callable
 
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
@@ -71,6 +72,44 @@ def build_pdf_name(codes: list[str]) -> str:
     return f"{sanitized[:180]}.pdf"
 
 
+def normalize_text(value: str) -> str:
+    text = unicodedata.normalize("NFKD", str(value or ""))
+    text = "".join(ch for ch in text if not unicodedata.combining(ch))
+    text = re.sub(r"\s+", " ", text).strip().upper()
+    return text
+
+
+def extract_pdf_text(path: str) -> str:
+    import fitz
+
+    with fitz.open(path) as document:
+        return "\n".join(page.get_text("text") for page in document)
+
+
+def pdf_matches_expected_identity(
+    pdf_text: str,
+    expected_doc: str,
+    expected_names: list[str] | None = None,
+) -> tuple[bool, str]:
+    normalized_pdf = normalize_text(pdf_text)
+    normalized_doc = re.sub(r"\D+", "", str(expected_doc or ""))
+
+    if normalized_doc and normalized_doc not in re.sub(r"\D+", "", normalized_pdf):
+        return False, f"PDF no contiene documento esperado {normalized_doc}"
+
+    normalized_names = [
+        normalize_text(name)
+        for name in (expected_names or [])
+        if normalize_text(name)
+    ]
+    full_name = " ".join(normalized_names).strip()
+
+    if full_name and full_name not in normalized_pdf:
+        return False, f"PDF no contiene nombre esperado {full_name}"
+
+    return True, "Identidad validada"
+
+
 async def select_bootstrap_option(page, selector: str, option_text: str) -> None:
     dropdown = page.locator(selector)
     await dropdown.click()
@@ -101,8 +140,20 @@ async def run_grouped_scraper(
     folder = reset_output_folder(base_output, folder_name)
     concurrency = resolve_concurrency(concurrency, folder_name)
     grouped = (
-        df.groupby("Nro Iden", dropna=True)["Cred"]
-        .apply(lambda values: [str(value).strip() for value in values if str(value).strip()])
+        df.groupby("Nro Iden", dropna=True)
+        .apply(
+            lambda group: {
+                "codes": [
+                    str(value).strip()
+                    for value in group["Cred"]
+                    if str(value).strip()
+                ],
+                "names": [
+                    str(group.iloc[0].get("Nombre", "")).strip(),
+                    str(group.iloc[0].get("Apellido", "")).strip(),
+                ],
+            }
+        )
         .to_dict()
     )
 
@@ -131,9 +182,12 @@ async def run_grouped_scraper(
             f"[{source_label}] Concurrencia activa: {concurrency} documentos en paralelo"
         )
 
-        async def process_document(doc: str, codes: list[str]) -> None:
+        async def process_document(doc: str, payload: dict[str, list[str]]) -> None:
             async with semaphore:
+                codes = payload["codes"]
+                expected_names = payload.get("names", [])
                 pdf_name = build_pdf_name(codes)
+                pdf_path = os.path.join(folder, pdf_name)
                 log(f"[{source_label}] Procesando documento {doc} ({len(codes)} credenciales)")
 
                 download_success = False
@@ -164,7 +218,26 @@ async def run_grouped_scraper(
                                         await page.get_by_role("button", name="Aceptar").click(timeout=5000)
 
                                     download = await download_info.value
-                                    await download.save_as(os.path.join(folder, pdf_name))
+                                    await download.save_as(pdf_path)
+                                    pdf_text = extract_pdf_text(pdf_path)
+                                    matches, validation_detail = pdf_matches_expected_identity(
+                                        pdf_text,
+                                        expected_doc=doc,
+                                        expected_names=expected_names,
+                                    )
+                                    if not matches:
+                                        if os.path.exists(pdf_path):
+                                            os.remove(pdf_path)
+                                        detail = (
+                                            f"Certificado descargado no coincide con documento consultado {doc}. "
+                                            f"{validation_detail}"
+                                        )
+                                        log(
+                                            f"[{source_label}] Certificado descartado para {doc}: "
+                                            f"{validation_detail}"
+                                        )
+                                        break
+
                                     detail = f"Descargado como {pdf_name}"
                                     download_success = True
                                     log(f"[{source_label}] Descargado {pdf_name}")
@@ -214,7 +287,7 @@ async def run_grouped_scraper(
                 df.loc[df["Nro Iden"] == doc, "DetalleDescarga"] = detail
 
         await asyncio.gather(
-            *(process_document(doc, codes) for doc, codes in grouped.items())
+            *(process_document(doc, payload) for doc, payload in grouped.items())
         )
         await browser.close()
 
