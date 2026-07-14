@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Legalización de Inscripción</title>
+  <title>Conversión masiva a PDF/A</title>
 
   <link rel="stylesheet" href="{{ url_for('static', filename='css/app.css') }}">
 </head>
@@ -36,14 +36,14 @@
             <span>Generación documental</span>
           </span>
         </a>
-        <a href="/legalizacion" class="sidebar-link active">
+        <a href="/legalizacion" class="sidebar-link">
           <span class="sidebar-link-icon">📁</span>
           <span class="sidebar-link-text">
             <strong>Legalización</strong>
             <span>Clasificación y descarga</span>
           </span>
         </a>
-        <a href="/pdfa" class="sidebar-link">
+        <a href="/pdfa" class="sidebar-link active">
           <span class="sidebar-link-icon">🧾</span>
           <span class="sidebar-link-text">
             <strong>PDF/A</strong>
@@ -55,7 +55,7 @@
 
     <div class="sidebar-note">
       <strong>Flujo</strong>
-      <p>El módulo descarga PDFs, extrae credenciales, clasifica soportes y genera reporte consolidado.</p>
+      <p>Sube un ZIP con PDFs, el servidor convierte cada archivo a PDF/A y devuelve un nuevo ZIP con la misma estructura.</p>
     </div>
   </aside>
 
@@ -63,8 +63,8 @@
     <header class="page-header">
       <div>
         <span class="eyebrow">Módulo</span>
-        <h1>Legalización de Inscripción</h1>
-        <p>Sube el Excel, procesa las URLs de soporte y descarga el ZIP final con clasificación, PDFs y reporte en un flujo único.</p>
+        <h1>Conversión masiva a PDF/A</h1>
+        <p>Carga un archivo ZIP con cualquier cantidad de PDFs. El proceso conserva carpetas internas, convierte cada documento a PDF/A-2 y habilita la descarga del ZIP final.</p>
       </div>
       <button class="theme-toggle" id="theme-toggle">🌙</button>
     </header>
@@ -73,39 +73,20 @@
       <div class="split-grid">
         <section class="page-card">
           <h2 class="page-card-title">Carga de archivo</h2>
-          <p class="page-card-subtitle">Selecciona el Excel fuente y el tipo de legalización que quieres procesar.</p>
+          <p class="page-card-subtitle">El ZIP puede incluir carpetas. Solo se procesan archivos `.pdf`; los demás se ignoran.</p>
 
-          <form id="form-legalizacion" enctype="multipart/form-data">
-            <fieldset class="mode-selector">
-              <legend>Tipo de proceso</legend>
-              <label>
-                <input type="radio" name="mode" value="inscripcion" checked />
-                <span>
-                  <strong>Inscripción</strong>
-                  <small>Clasifica por tipo de inscripción y programa académico.</small>
-                </span>
-              </label>
-              <label>
-                <input type="radio" name="mode" value="soportes" />
-                <span>
-                  <strong>Soportes por frases</strong>
-                  <small>Lee la columna URL procesada y clasifica por entidad o certificación.</small>
-                </span>
-              </label>
-            </fieldset>
-
+          <form id="form-pdfa" enctype="multipart/form-data">
             <section class="upload-row single">
               <div class="upload-card">
-                <h3>Archivo Excel</h3>
-                <input type="file" name="excel" accept=".xlsx,.xls" required />
-                <p>Para soportes por frases se requiere la columna `URL procesada`. Para inscripción se usa la plantilla estándar del módulo.</p>
+                <h3>Archivo ZIP</h3>
+                <input type="file" name="zip_file" accept=".zip,application/zip" required />
+                <p>Tamaño máximo actual: 200 MB. El resultado conserva nombres y rutas relativas de los PDFs convertidos.</p>
               </div>
             </section>
 
             <div class="actions-row">
-              <button id="legalizacion-submit" type="submit">Iniciar procesamiento</button>
-              <button id="legalizacion-cancel" type="button" class="btn-danger hidden">Frenar proceso</button>
-              <a id="legalizacion-download" class="btn-primary btn-download hidden download-link" href="#">Descargar ZIP final</a>
+              <button id="pdfa-submit" type="submit">Iniciar conversión</button>
+              <a id="pdfa-download" class="btn-primary btn-download hidden download-link" href="#">Descargar ZIP PDF/A</a>
             </div>
           </form>
         </section>
@@ -115,19 +96,19 @@
           <div class="meta-list">
             <div class="meta-item">
               <strong>Entrada</strong>
-              <span>Excel con enlaces a PDFs y metadatos de inscripción.</span>
+              <span>Un único ZIP con uno o muchos PDFs.</span>
             </div>
             <div class="meta-item">
               <strong>Proceso</strong>
-              <span>Descarga, OCR si aplica, extracción de credenciales y clasificación por carpeta.</span>
+              <span>Extracción segura, validación de rutas y conversión por `Ghostscript` a PDF/A-2.</span>
             </div>
             <div class="meta-item">
               <strong>Salida</strong>
-              <span>ZIP final con documentos organizados y reporte Excel de trazabilidad. Los soportes sin credencial quedan como pendiente_credencial_N.</span>
+              <span>ZIP final con los PDFs convertidos y la misma estructura interna del paquete original.</span>
             </div>
             <div class="meta-item">
-              <strong>Experiencia</strong>
-              <span>La descarga se habilita automáticamente cuando el proceso termina correctamente.</span>
+              <strong>Nota</strong>
+              <span>Si un PDF falla, el resumen mostrará cuántos archivos no pudieron convertirse.</span>
             </div>
           </div>
         </aside>
@@ -135,25 +116,25 @@
 
       <section class="page-card">
         <h2 class="page-card-title">Seguimiento de ejecución</h2>
-        <p class="page-card-subtitle">Consulta el avance por fila, el resultado de validación y la disponibilidad del archivo final.</p>
+        <p class="page-card-subtitle">Consulta avance, errores por archivo y disponibilidad de descarga.</p>
 
         <div class="status-panel legalizacion-status">
           <div class="status-copy">
-            <strong id="legalizacion-status-title">Sin proceso activo</strong>
-            <p id="legalizacion-status-text">Esperando archivo para procesar.</p>
+            <strong id="pdfa-status-title">Sin proceso activo</strong>
+            <p id="pdfa-status-text">Esperando ZIP para procesar.</p>
           </div>
-          <div id="legalizacion-counter" class="status-timer">0/0</div>
+          <div id="pdfa-counter" class="status-timer">0/0</div>
         </div>
 
         <div class="legalizacion-progress-wrap">
-          <progress id="legalizacion-progress" value="0" max="100"></progress>
+          <progress id="pdfa-progress" value="0" max="100"></progress>
         </div>
 
-        <div id="legalizacion-download-hint" class="download-hint">
-          El botón de descarga aparecerá aquí cuando el ZIP esté listo.
+        <div id="pdfa-download-hint" class="download-hint">
+          El botón de descarga aparecerá aquí cuando el ZIP convertido esté listo.
         </div>
-        <div id="legalizacion-summary" class="summary-card hidden"></div>
-        <div id="legalizacion-logs" class="logs-box"></div>
+        <div id="pdfa-summary" class="summary-card hidden"></div>
+        <div id="pdfa-logs" class="logs-box"></div>
       </section>
 
       <div class="footer">Universidad Distrital 2025</div>
@@ -162,7 +143,7 @@
 </div>
 
 <script src="{{ url_for('static', filename='js/theme-toggle.js') }}"></script>
-<script src="{{ url_for('static', filename='js/legalizacion.js') }}"></script>
+<script src="{{ url_for('static', filename='js/pdfa.js') }}"></script>
 
 </body>
 </html>

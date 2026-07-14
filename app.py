@@ -2,6 +2,11 @@ import os
 import asyncio
 import threading
 import zipfile
+import shutil
+import subprocess
+import tempfile
+import re
+import fitz
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from queue import Empty, Queue
@@ -32,11 +37,15 @@ UPLOAD_FOLDER = os.path.join(APP_ROOT, "uploads")
 OUTPUT_FOLDER = os.path.join(APP_ROOT, "salidas")
 LEGALIZACION_UPLOAD_FOLDER = os.path.join(UPLOAD_FOLDER, "legalizacion")
 LEGALIZACION_DEFAULT_OUTPUT = os.path.join(OUTPUT_FOLDER, "legalizacion")
+PDFA_UPLOAD_FOLDER = os.path.join(UPLOAD_FOLDER, "pdfa")
+PDFA_OUTPUT_FOLDER = os.path.join(OUTPUT_FOLDER, "pdfa")
 
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 os.makedirs(LEGALIZACION_UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(LEGALIZACION_DEFAULT_OUTPUT, exist_ok=True)
+os.makedirs(PDFA_UPLOAD_FOLDER, exist_ok=True)
+os.makedirs(PDFA_OUTPUT_FOLDER, exist_ok=True)
 
 # --------------------------------------------------------------
 # Estado SOLO para certificados
@@ -50,13 +59,14 @@ ESTADO_PROCESO = {
     "log_queue": None,
 }
 LEGALIZACION_JOBS = {}
+PDFA_JOBS = {}
 
 # --------------------------------------------------------------
 # App Flask
 # --------------------------------------------------------------
 app = Flask(__name__)
 app.config["UPLOAD_FOLDER"] = UPLOAD_FOLDER
-app.config["MAX_CONTENT_LENGTH"] = 20 * 1024 * 1024
+app.config["MAX_CONTENT_LENGTH"] = 200 * 1024 * 1024
 
 
 @dataclass
@@ -77,6 +87,24 @@ class LegalizacionJobState:
         data = asdict(self)
         data["download_url"] = f"/legalizacion/jobs/{self.id}/download" if self.zip_path else ""
         data["cancel_url"] = f"/legalizacion/jobs/{self.id}/cancel"
+        return data
+
+
+@dataclass
+class PdfaJobState:
+    id: str
+    status: str = "pending"
+    current: int = 0
+    total: int = 0
+    message: str = "Esperando inicio"
+    logs: list[str] | None = None
+    error: str = ""
+    summary: dict[str, object] | None = None
+    zip_path: str = ""
+
+    def to_dict(self) -> dict[str, object]:
+        data = asdict(self)
+        data["download_url"] = f"/pdfa/jobs/{self.id}/download" if self.zip_path else ""
         return data
 
 
@@ -185,6 +213,11 @@ def estudios_previos_view():
 @app.route("/legalizacion", methods=["GET"])
 def legalizacion_view():
     return render_template("legalizacion.html")
+
+
+@app.route("/pdfa", methods=["GET"])
+def pdfa_view():
+    return render_template("pdfa.html")
 
 # --------------------------------------------------------------
 # SCRAPING CERTIFICADOS (NO TOCAR)
@@ -468,6 +501,333 @@ def legalizacion_summary_to_dict(summary: LegalizacionSummary | LegalizacionSopo
         "report_path": str(summary.report_path),
         "work_dir": str(summary.work_dir),
     }
+
+
+def is_within_directory(base_dir: Path, candidate: Path) -> bool:
+    try:
+        candidate.resolve().relative_to(base_dir.resolve())
+        return True
+    except ValueError:
+        return False
+
+
+def extract_zip_safely(zip_path: Path, destination: Path) -> tuple[list[Path], int]:
+    extracted_pdfs: list[Path] = []
+    ignored_files = 0
+
+    with zipfile.ZipFile(zip_path) as archive:
+        for member in archive.infolist():
+            member_name = member.filename.strip()
+            if not member_name or member.is_dir():
+                continue
+
+            relative_path = Path(member_name)
+            if relative_path.is_absolute():
+                ignored_files += 1
+                continue
+
+            if relative_path.suffix.lower() != ".pdf":
+                ignored_files += 1
+                continue
+
+            target_path = destination / relative_path
+            if not is_within_directory(destination, target_path):
+                ignored_files += 1
+                continue
+
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            with archive.open(member) as source, open(target_path, "wb") as target:
+                shutil.copyfileobj(source, target)
+            extracted_pdfs.append(target_path)
+
+    return extracted_pdfs, ignored_files
+
+
+def build_pdfa_definition_file(temp_dir: Path, title: str) -> Path:
+    template_path = resolve_pdfa_definition_template()
+    icc_profile = "/usr/share/color/icc/ghostscript/srgb.icc"
+    if not Path(icc_profile).exists():
+        icc_profile = "/usr/share/color/icc/colord/sRGB.icc"
+
+    raw_content = template_path.read_text(encoding="utf-8")
+    safe_title = title.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+    content = raw_content.replace("[ /Title (Title)", f"[ /Title ({safe_title})", 1)
+    content = re.sub(r"/ICCProfile\s+\(.*?\)\s+% Customise", f"/ICCProfile ({icc_profile}) % Customise", content, count=1)
+    content = re.sub(
+        r"%% ----------8<--------------8<-------------8<--------------8<----------.*?%% ----------8<--------------8<-------------8<--------------8<----------",
+        "  /N 3\n",
+        content,
+        count=1,
+        flags=re.S,
+    )
+    definition_path = temp_dir / "pdfa_def.ps"
+    definition_path.write_text(content, encoding="utf-8")
+    return definition_path
+
+
+def resolve_pdfa_definition_template() -> Path:
+    candidates = [
+        "/usr/share/ghostscript/10.02.1/lib/PDFA_def.ps",
+        "/usr/share/ghostscript/9.53.3/lib/PDFA_def.ps",
+        "/usr/share/ghostscript/9.53.3/Resource/Init/PDFA_def.ps",
+    ]
+
+    for candidate in candidates:
+        path = Path(candidate)
+        if path.exists():
+            return path
+
+    dynamic_root = Path("/usr/share/ghostscript")
+    if dynamic_root.exists():
+        matches = sorted(dynamic_root.glob("*/lib/PDFA_def.ps"))
+        if matches:
+            return matches[0]
+
+    raise RuntimeError("No se encontro la plantilla oficial PDFA_def.ps en el sistema.")
+
+
+def resolve_ghostscript_binary() -> str:
+    configured = os.environ.get("GHOSTSCRIPT_BIN", "").strip()
+    candidates = [configured, shutil.which("gs"), "/usr/bin/gs", "/usr/local/bin/gs"]
+
+    for candidate in candidates:
+        if candidate and Path(candidate).exists():
+            return candidate
+
+    raise RuntimeError(
+        "Ghostscript no esta instalado o no esta disponible en PATH. "
+        "Reconstruye el contenedor con la dependencia `ghostscript`."
+    )
+
+
+def resolve_qpdf_binary() -> str:
+    configured = os.environ.get("QPDF_BIN", "").strip()
+    candidates = [configured, shutil.which("qpdf"), "/usr/bin/qpdf", "/usr/local/bin/qpdf"]
+
+    for candidate in candidates:
+        if candidate and Path(candidate).exists():
+            return candidate
+
+    raise RuntimeError(
+        "qpdf no esta instalado o no esta disponible en PATH. "
+        "Reconstruye el contenedor con la dependencia `qpdf`."
+    )
+
+
+def repair_pdf_with_qpdf(source_pdf: Path, repaired_pdf: Path) -> None:
+    qpdf_binary = resolve_qpdf_binary()
+    command = [
+        qpdf_binary,
+        "--object-streams=disable",
+        str(source_pdf),
+        str(repaired_pdf),
+    ]
+    completed = subprocess.run(command, capture_output=True, text=True, check=False)
+    if completed.returncode != 0:
+        details = "\n".join(part for part in [completed.stdout.strip(), completed.stderr.strip()] if part).strip()
+        raise RuntimeError(details or "qpdf no pudo reparar el PDF.")
+
+
+def sanitize_pdfa_annotations(source_pdf: Path, sanitized_pdf: Path) -> int:
+    removed = 0
+    document = fitz.open(source_pdf)
+    try:
+        for page in document:
+            annot = page.first_annot
+            while annot is not None:
+                next_annot = annot.next
+                annot_xref = annot.xref
+                annot_type = (annot.type[1] or "").strip()
+                has_ap, ap_value = document.xref_get_key(annot_xref, "AP")
+
+                rect = annot.rect
+                zero_rect = rect.x0 == rect.x1 and rect.y0 == rect.y1
+                can_skip_ap = annot_type in {"Popup", "Link"} or zero_rect
+                missing_ap = has_ap == "null" or ap_value in {"null", ""}
+
+                if missing_ap and not can_skip_ap:
+                    page.delete_annot(annot)
+                    removed += 1
+
+                annot = next_annot
+
+        document.save(
+            sanitized_pdf,
+            garbage=4,
+            deflate=True,
+            clean=True,
+            incremental=False,
+        )
+    finally:
+        document.close()
+
+    return removed
+
+
+def convert_pdf_to_pdfa(source_pdf: Path, target_pdf: Path) -> None:
+    target_pdf.parent.mkdir(parents=True, exist_ok=True)
+    gs_binary = resolve_ghostscript_binary()
+
+    with tempfile.TemporaryDirectory(prefix="pdfa_def_", dir=str(PDFA_OUTPUT_FOLDER)) as temp_dir_str:
+        temp_dir = Path(temp_dir_str)
+        definition_path = build_pdfa_definition_file(temp_dir, source_pdf.stem)
+        repaired_pdf = temp_dir / "repaired.pdf"
+        sanitized_pdf = temp_dir / "sanitized.pdf"
+        repair_pdf_with_qpdf(source_pdf, repaired_pdf)
+        sanitize_pdfa_annotations(repaired_pdf, sanitized_pdf)
+
+        command = [
+            gs_binary,
+            "-dPDFA=2",
+            "-dBATCH",
+            "-dNOPAUSE",
+            "-dNOOUTERSAVE",
+            "-sProcessColorModel=DeviceRGB",
+            "-sColorConversionStrategy=RGB",
+            "-sDEVICE=pdfwrite",
+            "-dPDFACompatibilityPolicy=1",
+            f"-sOutputFile={target_pdf}",
+            f"--permit-file-read={definition_path}",
+            f"--permit-file-read={sanitized_pdf}",
+            "--permit-file-read=/usr/share/color/icc/ghostscript/srgb.icc",
+            "--permit-file-read=/usr/share/color/icc/colord/sRGB.icc",
+            str(definition_path),
+            str(sanitized_pdf),
+        ]
+        completed = subprocess.run(command, capture_output=True, text=True, check=False)
+        if completed.returncode != 0:
+            details = "\n".join(part for part in [completed.stdout.strip(), completed.stderr.strip()] if part).strip()
+            raise RuntimeError(details)
+
+
+def create_pdfa_zip(zip_path: Path, converted_dir: Path) -> None:
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as archive:
+        for file_path in sorted(converted_dir.rglob("*")):
+            if not file_path.is_file():
+                continue
+            archive.write(file_path, file_path.relative_to(converted_dir))
+
+
+@app.route("/pdfa/jobs", methods=["POST"])
+def pdfa_create_job():
+    uploaded_file = request.files.get("zip_file")
+    if not uploaded_file or uploaded_file.filename == "":
+        return jsonify({"error": "Selecciona un archivo ZIP."}), 400
+
+    suffix = Path(uploaded_file.filename).suffix.lower()
+    if suffix != ".zip":
+        return jsonify({"error": "El archivo debe ser .zip."}), 400
+
+    job_id = uuid4().hex
+    filename = secure_filename(uploaded_file.filename) or "entrada.zip"
+    zip_path = os.path.join(PDFA_UPLOAD_FOLDER, f"{job_id}_{filename}")
+    uploaded_file.save(zip_path)
+
+    state = PdfaJobState(
+        id=job_id,
+        status="running",
+        message="ZIP recibido. Preparando extracción...",
+        logs=["ZIP recibido. Preparando extracción..."],
+    )
+    PDFA_JOBS[job_id] = state
+
+    thread = threading.Thread(target=run_pdfa_job, args=(job_id, Path(zip_path), Path(filename).stem), daemon=True)
+    thread.start()
+    return jsonify({"job_id": job_id})
+
+
+@app.route("/pdfa/jobs/<job_id>", methods=["GET"])
+def pdfa_job_status(job_id):
+    state = PDFA_JOBS.get(job_id)
+    if not state:
+        return jsonify({"error": "Trabajo no encontrado."}), 404
+    return jsonify(state.to_dict())
+
+
+@app.route("/pdfa/jobs/<job_id>/download", methods=["GET"])
+def pdfa_download_zip(job_id):
+    state = PDFA_JOBS.get(job_id)
+    if not state or not state.zip_path:
+        return jsonify({"error": "ZIP no disponible."}), 404
+
+    zip_path = Path(state.zip_path)
+    if not zip_path.exists():
+        return jsonify({"error": "El ZIP ya no existe en disco."}), 404
+
+    return send_file(zip_path, as_attachment=True, download_name=zip_path.name)
+
+
+def run_pdfa_job(job_id: str, zip_path: Path, original_stem: str) -> None:
+    state = PDFA_JOBS[job_id]
+    work_dir = Path(PDFA_OUTPUT_FOLDER) / job_id
+    extracted_dir = work_dir / "input"
+    converted_dir = work_dir / "pdfa"
+    output_zip = work_dir / f"{original_stem}_pdfa.zip"
+
+    try:
+        if work_dir.exists():
+            shutil.rmtree(work_dir)
+        extracted_dir.mkdir(parents=True, exist_ok=True)
+        converted_dir.mkdir(parents=True, exist_ok=True)
+
+        state.message = "Extrayendo ZIP..."
+        if state.logs is not None:
+            state.logs.append("Extrayendo contenido del ZIP...")
+
+        pdf_files, ignored_files = extract_zip_safely(zip_path, extracted_dir)
+        if not pdf_files:
+            raise ValueError("El ZIP no contiene archivos PDF válidos.")
+
+        pdf_files = sorted(pdf_files)
+        state.total = len(pdf_files)
+        if state.logs is not None and ignored_files:
+            state.logs.append(f"Archivos ignorados por no ser PDF o por ruta inválida: {ignored_files}")
+
+        converted = 0
+        failed = 0
+        failures: list[str] = []
+
+        for index, source_pdf in enumerate(pdf_files, start=1):
+            relative_path = source_pdf.relative_to(extracted_dir)
+            target_pdf = converted_dir / relative_path
+            state.current = index
+            state.message = f"Convirtiendo {relative_path}"
+            if state.logs is not None:
+                state.logs.append(f"[{index}/{state.total}] Convirtiendo {relative_path}")
+
+            try:
+                convert_pdf_to_pdfa(source_pdf, target_pdf)
+                converted += 1
+            except Exception as exc:
+                failed += 1
+                failures.append(f"{relative_path}: {exc}")
+                if state.logs is not None:
+                    state.logs.append(f"[{index}/{state.total}] Error en {relative_path}: {exc}")
+
+        if converted == 0:
+            raise RuntimeError("No fue posible convertir ningún PDF a PDF/A.")
+
+        create_pdfa_zip(output_zip, converted_dir)
+        state.status = "done"
+        state.current = state.total
+        state.message = "Conversión finalizada"
+        state.zip_path = str(output_zip)
+        state.summary = {
+            "total_pdfs": state.total,
+            "converted": converted,
+            "failed": failed,
+            "ignored": ignored_files,
+            "work_dir": str(work_dir),
+            "failures": failures,
+        }
+        if state.logs is not None:
+            state.logs.append(f"ZIP generado en: {output_zip}")
+    except Exception as exc:
+        state.status = "error"
+        state.error = str(exc)
+        state.message = "Proceso detenido por error"
+        if state.logs is not None:
+            state.logs.append(str(exc))
 
 # --------------------------------------------------------------
 # MAIN
