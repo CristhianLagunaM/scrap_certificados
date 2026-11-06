@@ -25,21 +25,32 @@ pdfaForm.addEventListener("submit", async (event) => {
   pdfaProgress.value = 0;
   pdfaDownloadHint.textContent = "Preparando conversión. La descarga se habilitará al finalizar.";
 
-  const response = await fetch("/pdfa/jobs", {
-    method: "POST",
-    body: new FormData(pdfaForm),
-  });
+  try {
+    const response = await fetch("/pdfa/jobs", {
+      method: "POST",
+      body: new FormData(pdfaForm),
+    });
 
-  const payload = await response.json().catch(() => ({}));
-  if (!response.ok) {
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      const detail = payload.error || (response.status === 413
+        ? "El ZIP supera el tamaño permitido por el servidor. Revisa el límite indicado en el formulario; el servidor de acceso puede tener un límite menor."
+        : "El servidor rechazó el inicio de la conversión.");
+      const message = `${detail} (HTTP ${response.status})`;
+      pdfaSubmit.disabled = false;
+      pdfaTitle.textContent = "Error";
+      pdfaText.textContent = message;
+      pdfaLogs.textContent += `${message}\n`;
+      return;
+    }
+
+    pollPdfaJob(payload.job_id);
+  } catch (error) {
     pdfaSubmit.disabled = false;
     pdfaTitle.textContent = "Error";
-    pdfaText.textContent = payload.error || "No fue posible iniciar el proceso.";
-    pdfaLogs.textContent += `${payload.error || "No fue posible iniciar el proceso."}\n`;
-    return;
+    pdfaText.textContent = "No se pudo conectar con el servidor para iniciar la conversión. Revisa la conexión e intenta de nuevo.";
+    pdfaLogs.textContent += `${error?.message || "Fallo de red al iniciar el proceso."}\n`;
   }
-
-  pollPdfaJob(payload.job_id);
 });
 
 function pollPdfaJob(jobId) {
@@ -48,14 +59,30 @@ function pollPdfaJob(jobId) {
   }
 
   const refresh = async () => {
-    const response = await fetch(`/pdfa/jobs/${jobId}`);
-    const state = await response.json().catch(() => ({}));
-    renderPdfaState(state);
+    try {
+      const response = await fetch(`/pdfa/jobs/${jobId}`);
+      const state = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(state.error || "No fue posible consultar el estado del trabajo.");
+      }
 
-    if (state.status === "done" || state.status === "error") {
+      renderPdfaState(state);
+
+      if (state.status === "done" || state.status === "error") {
+        clearInterval(pdfaPollTimer);
+        pdfaPollTimer = null;
+        pdfaSubmit.disabled = false;
+      }
+    } catch (error) {
       clearInterval(pdfaPollTimer);
       pdfaPollTimer = null;
       pdfaSubmit.disabled = false;
+      renderPdfaState({
+        status: "error",
+        error: error?.message || "No fue posible consultar el estado del proceso.",
+        message: "Proceso detenido por error",
+        logs: [`${error?.message || "No fue posible consultar el estado del proceso."}`],
+      });
     }
   };
 
@@ -93,8 +120,12 @@ function renderPdfaState(state) {
     pdfaSummary.innerHTML = `
       <div><strong>PDFs encontrados:</strong> ${state.summary.total_pdfs}</div>
       <div><strong>Convertidos:</strong> ${state.summary.converted}</div>
+      <div><strong>Válidos PDF/A:</strong> ${state.summary.valid_pdfa ?? 0}</div>
+      <div><strong>No conformes PDF/A:</strong> ${state.summary.invalid_pdfa ?? 0}</div>
+      <div><strong>Sin validar:</strong> ${state.summary.unvalidated ?? 0}</div>
       <div><strong>Fallidos:</strong> ${state.summary.failed}</div>
       <div><strong>Ignorados:</strong> ${state.summary.ignored}</div>
+      <div><strong>Validación automática:</strong> ${state.summary.validation_available ? "veraPDF 2b" : "No disponible"}</div>
       ${failures}
     `;
 

@@ -8,6 +8,7 @@ services:
       - "8001:8000"
     environment:
       PYTHONUNBUFFERED: "1"
+      MAX_UPLOAD_MB: "${MAX_UPLOAD_MB:-512}"
       TZ: "America/Bogota"
       SCRAPER_CONCURRENCY: "3"
       LEGALIZACION_WORKERS: "6"
@@ -20,6 +21,7 @@ services:
     volumes:
       - ./uploads:/app/uploads
       - ./salidas:/app/salidas
+      - /home/vi/verapdf:/opt/verapdf:ro
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/', timeout=10)\""]
       interval: 30s

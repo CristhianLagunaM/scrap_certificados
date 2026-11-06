@@ -66,7 +66,7 @@ PDFA_JOBS = {}
 # --------------------------------------------------------------
 app = Flask(__name__)
 app.config["UPLOAD_FOLDER"] = UPLOAD_FOLDER
-app.config["MAX_CONTENT_LENGTH"] = 200 * 1024 * 1024
+app.config["MAX_CONTENT_LENGTH"] = int(os.environ.get("MAX_UPLOAD_MB", "512")) * 1024 * 1024
 
 
 @dataclass
@@ -217,7 +217,7 @@ def legalizacion_view():
 
 @app.route("/pdfa", methods=["GET"])
 def pdfa_view():
-    return render_template("pdfa.html")
+    return render_template("pdfa.html", max_upload_mb=app.config["MAX_CONTENT_LENGTH"] // (1024 * 1024))
 
 # --------------------------------------------------------------
 # SCRAPING CERTIFICADOS (NO TOCAR)
@@ -511,15 +511,17 @@ def is_within_directory(base_dir: Path, candidate: Path) -> bool:
         return False
 
 
-def extract_zip_safely(zip_path: Path, destination: Path) -> tuple[list[Path], int]:
+def extract_zip_safely(zip_path: Path, destination: Path) -> tuple[list[Path], int, int]:
     extracted_pdfs: list[Path] = []
     ignored_files = 0
+    scanned_files = 0
 
     with zipfile.ZipFile(zip_path) as archive:
         for member in archive.infolist():
             member_name = member.filename.strip()
             if not member_name or member.is_dir():
                 continue
+            scanned_files += 1
 
             relative_path = Path(member_name)
             if relative_path.is_absolute():
@@ -540,7 +542,7 @@ def extract_zip_safely(zip_path: Path, destination: Path) -> tuple[list[Path], i
                 shutil.copyfileobj(source, target)
             extracted_pdfs.append(target_path)
 
-    return extracted_pdfs, ignored_files
+    return extracted_pdfs, ignored_files, scanned_files
 
 
 def build_pdfa_definition_file(temp_dir: Path, title: str) -> Path:
@@ -614,6 +616,23 @@ def resolve_qpdf_binary() -> str:
     )
 
 
+def resolve_verapdf_binary() -> str:
+    configured = os.environ.get("VERAPDF_BIN", "").strip()
+    candidates = [
+        configured,
+        shutil.which("verapdf"),
+        "/opt/verapdf/verapdf",
+        "/root/verapdf/verapdf",
+        "/home/vi/verapdf/verapdf",
+    ]
+
+    for candidate in candidates:
+        if candidate and Path(candidate).exists():
+            return candidate
+
+    return ""
+
+
 def repair_pdf_with_qpdf(source_pdf: Path, repaired_pdf: Path) -> None:
     qpdf_binary = resolve_qpdf_binary()
     command = [
@@ -664,6 +683,27 @@ def sanitize_pdfa_annotations(source_pdf: Path, sanitized_pdf: Path) -> int:
     return removed
 
 
+def flatten_pdf_transparency(source_pdf: Path, flattened_pdf: Path) -> None:
+    document = fitz.open(source_pdf)
+    output = fitz.open()
+    try:
+        for page in document:
+            pixmap = page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
+            new_page = output.new_page(width=page.rect.width, height=page.rect.height)
+            new_page.insert_image(new_page.rect, stream=pixmap.tobytes("png"))
+
+        output.save(
+            flattened_pdf,
+            garbage=4,
+            deflate=True,
+            clean=True,
+            incremental=False,
+        )
+    finally:
+        output.close()
+        document.close()
+
+
 def convert_pdf_to_pdfa(source_pdf: Path, target_pdf: Path) -> None:
     target_pdf.parent.mkdir(parents=True, exist_ok=True)
     gs_binary = resolve_ghostscript_binary()
@@ -673,8 +713,10 @@ def convert_pdf_to_pdfa(source_pdf: Path, target_pdf: Path) -> None:
         definition_path = build_pdfa_definition_file(temp_dir, source_pdf.stem)
         repaired_pdf = temp_dir / "repaired.pdf"
         sanitized_pdf = temp_dir / "sanitized.pdf"
+        flattened_pdf = temp_dir / "flattened.pdf"
         repair_pdf_with_qpdf(source_pdf, repaired_pdf)
         sanitize_pdfa_annotations(repaired_pdf, sanitized_pdf)
+        flatten_pdf_transparency(sanitized_pdf, flattened_pdf)
 
         command = [
             gs_binary,
@@ -686,13 +728,15 @@ def convert_pdf_to_pdfa(source_pdf: Path, target_pdf: Path) -> None:
             "-sColorConversionStrategy=RGB",
             "-sDEVICE=pdfwrite",
             "-dPDFACompatibilityPolicy=1",
+            "-dDetectDuplicateImages=true",
+            "-dCompressFonts=true",
             f"-sOutputFile={target_pdf}",
             f"--permit-file-read={definition_path}",
-            f"--permit-file-read={sanitized_pdf}",
+            f"--permit-file-read={flattened_pdf}",
             "--permit-file-read=/usr/share/color/icc/ghostscript/srgb.icc",
             "--permit-file-read=/usr/share/color/icc/colord/sRGB.icc",
             str(definition_path),
-            str(sanitized_pdf),
+            str(flattened_pdf),
         ]
         completed = subprocess.run(command, capture_output=True, text=True, check=False)
         if completed.returncode != 0:
@@ -706,6 +750,38 @@ def create_pdfa_zip(zip_path: Path, converted_dir: Path) -> None:
             if not file_path.is_file():
                 continue
             archive.write(file_path, file_path.relative_to(converted_dir))
+
+
+def validate_pdfa_with_verapdf(pdf_path: Path) -> tuple[bool | None, str]:
+    verapdf_binary = resolve_verapdf_binary()
+    if not verapdf_binary:
+        return None, "veraPDF no disponible en el contenedor"
+
+    command = [
+        verapdf_binary,
+        "--format",
+        "text",
+        "--flavour",
+        "2b",
+        str(pdf_path),
+    ]
+    completed = subprocess.run(command, capture_output=True, text=True, check=False)
+    details = "\n".join(part for part in [completed.stdout.strip(), completed.stderr.strip()] if part).strip()
+
+    if "PASS " in details:
+        return True, details
+    if "JAVA_HOME is not defined correctly" in details or "Unable to access jarfile" in details:
+        return None, details
+    if "FAIL " in details or completed.returncode != 0:
+        return False, details or "veraPDF marco el archivo como no conforme"
+    return None, details or "No fue posible determinar conformidad PDF/A"
+
+
+def copy_to_bucket(source_file: Path, bucket_dir: Path, relative_path: Path) -> Path:
+    target = bucket_dir / relative_path
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source_file, target)
+    return target
 
 
 @app.route("/pdfa/jobs", methods=["POST"])
@@ -761,31 +837,45 @@ def run_pdfa_job(job_id: str, zip_path: Path, original_stem: str) -> None:
     state = PDFA_JOBS[job_id]
     work_dir = Path(PDFA_OUTPUT_FOLDER) / job_id
     extracted_dir = work_dir / "input"
-    converted_dir = work_dir / "pdfa"
+    package_dir = work_dir / "resultado"
+    valid_dir = package_dir / "validos_pdfa"
+    invalid_dir = package_dir / "no_conformes"
+    converted_dir = work_dir / "tmp_convertidos"
     output_zip = work_dir / f"{original_stem}_pdfa.zip"
 
     try:
         if work_dir.exists():
             shutil.rmtree(work_dir)
         extracted_dir.mkdir(parents=True, exist_ok=True)
+        package_dir.mkdir(parents=True, exist_ok=True)
+        valid_dir.mkdir(parents=True, exist_ok=True)
+        invalid_dir.mkdir(parents=True, exist_ok=True)
         converted_dir.mkdir(parents=True, exist_ok=True)
 
         state.message = "Extrayendo ZIP..."
         if state.logs is not None:
             state.logs.append("Extrayendo contenido del ZIP...")
 
-        pdf_files, ignored_files = extract_zip_safely(zip_path, extracted_dir)
+        pdf_files, ignored_files, scanned_files = extract_zip_safely(zip_path, extracted_dir)
         if not pdf_files:
             raise ValueError("El ZIP no contiene archivos PDF válidos.")
 
         pdf_files = sorted(pdf_files)
         state.total = len(pdf_files)
+        if state.logs is not None:
+            state.logs.append(f"Archivos revisados dentro del ZIP: {scanned_files}")
         if state.logs is not None and ignored_files:
             state.logs.append(f"Archivos ignorados por no ser PDF o por ruta inválida: {ignored_files}")
 
         converted = 0
+        valid_pdfa = 0
+        invalid_pdfa = 0
+        unvalidated = 0
         failed = 0
         failures: list[str] = []
+        verapdf_available = bool(resolve_verapdf_binary())
+        if state.logs is not None and not verapdf_available:
+            state.logs.append("veraPDF no disponible en contenedor. Se valida solo conversion tecnica.")
 
         for index, source_pdf in enumerate(pdf_files, start=1):
             relative_path = source_pdf.relative_to(extracted_dir)
@@ -798,16 +888,34 @@ def run_pdfa_job(job_id: str, zip_path: Path, original_stem: str) -> None:
             try:
                 convert_pdf_to_pdfa(source_pdf, target_pdf)
                 converted += 1
+                validation_ok, validation_detail = validate_pdfa_with_verapdf(target_pdf)
+
+                if validation_ok is False:
+                    invalid_pdfa += 1
+                    copy_to_bucket(target_pdf, invalid_dir, relative_path)
+                    detail = validation_detail.splitlines()[0][:500] if validation_detail else "No conforme PDF/A"
+                    failures.append(f"{relative_path}: {detail}")
+                    if state.logs is not None:
+                        state.logs.append(f"[{index}/{state.total}] No conforme PDF/A: {relative_path}")
+                    continue
+
+                copy_to_bucket(target_pdf, valid_dir, relative_path)
+                if validation_ok is True:
+                    valid_pdfa += 1
+                else:
+                    unvalidated += 1
             except Exception as exc:
                 failed += 1
-                failures.append(f"{relative_path}: {exc}")
+                copy_to_bucket(source_pdf, invalid_dir, relative_path)
+                detail = str(exc)
+                failures.append(f"{relative_path}: {detail}")
                 if state.logs is not None:
-                    state.logs.append(f"[{index}/{state.total}] Error en {relative_path}: {exc}")
+                    state.logs.append(f"[{index}/{state.total}] Error en {relative_path}: {detail}")
 
-        if converted == 0:
+        if converted == 0 and failed > 0:
             raise RuntimeError("No fue posible convertir ningún PDF a PDF/A.")
 
-        create_pdfa_zip(output_zip, converted_dir)
+        create_pdfa_zip(output_zip, package_dir)
         state.status = "done"
         state.current = state.total
         state.message = "Conversión finalizada"
@@ -815,8 +923,12 @@ def run_pdfa_job(job_id: str, zip_path: Path, original_stem: str) -> None:
         state.summary = {
             "total_pdfs": state.total,
             "converted": converted,
+            "valid_pdfa": valid_pdfa,
+            "invalid_pdfa": invalid_pdfa,
+            "unvalidated": unvalidated,
             "failed": failed,
             "ignored": ignored_files,
+            "validation_available": verapdf_available,
             "work_dir": str(work_dir),
             "failures": failures,
         }
