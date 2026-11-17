@@ -1,22 +1,21 @@
+import asyncio
 import os
 import re
 import shutil
-import asyncio
-import unicodedata
-from typing import Awaitable, Callable
+from collections.abc import Awaitable, Callable
 
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 from playwright.async_api import async_playwright
 
+from scrapers.identity import normalize_text as normalize_text
+from scrapers.identity import validate_pdf_identity
 from utils.logger_sse import log
 
-# Flags seguros para entornos de contenedor.
+# Chromium necesita varios procesos para mantener contextos aislados concurrentes.
 CHROMIUM_ARGS = [
     "--disable-dev-shm-usage",
     "--disable-setuid-sandbox",
     "--no-sandbox",
-    "--no-zygote",
-    "--single-process",
 ]
 BLOCKED_RESOURCE_TYPES = {"image", "media", "font"}
 BLOCKED_URL_HINTS = (
@@ -72,13 +71,6 @@ def build_pdf_name(codes: list[str]) -> str:
     return f"{sanitized[:180]}.pdf"
 
 
-def normalize_text(value: str) -> str:
-    text = unicodedata.normalize("NFKD", str(value or ""))
-    text = "".join(ch for ch in text if not unicodedata.combining(ch))
-    text = re.sub(r"\s+", " ", text).strip().upper()
-    return text
-
-
 def extract_pdf_text(path: str) -> str:
     import fitz
 
@@ -91,23 +83,8 @@ def pdf_matches_expected_identity(
     expected_doc: str,
     expected_names: list[str] | None = None,
 ) -> tuple[bool, str]:
-    normalized_pdf = normalize_text(pdf_text)
-    normalized_doc = re.sub(r"\D+", "", str(expected_doc or ""))
-
-    if normalized_doc and normalized_doc not in re.sub(r"\D+", "", normalized_pdf):
-        return False, f"PDF no contiene documento esperado {normalized_doc}"
-
-    normalized_names = [
-        normalize_text(name)
-        for name in (expected_names or [])
-        if normalize_text(name)
-    ]
-    full_name = " ".join(normalized_names).strip()
-
-    if full_name and full_name not in normalized_pdf:
-        return False, f"PDF no contiene nombre esperado {full_name}"
-
-    return True, "Identidad validada"
+    validation = validate_pdf_identity(pdf_text, expected_doc, expected_names)
+    return validation.status == "OK", validation.detail
 
 
 async def select_bootstrap_option(page, selector: str, option_text: str) -> None:
@@ -160,6 +137,11 @@ async def run_grouped_scraper(
     df = df.copy()
     df["EstadoDescarga"] = "PENDIENTE"
     df["DetalleDescarga"] = ""
+    for column in ("CoincidenciaDocumento", "CoincidenciaApellidos", "CoincidenciaNombres", "CoincidenciaGlobal"):
+        df[column] = float("nan")
+    df["NombreCertificado"] = ""
+    df["RevisionIdentidad"] = ""
+
 
     if not grouped:
         return df
@@ -168,16 +150,6 @@ async def run_grouped_scraper(
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True, args=CHROMIUM_ARGS)
-        context = await browser.new_context(accept_downloads=True)
-        context.set_default_timeout(45000)
-        await context.route(
-            "**/*",
-            lambda route: route.abort()
-            if route.request.resource_type in BLOCKED_RESOURCE_TYPES
-            or any(hint in route.request.url.lower() for hint in BLOCKED_URL_HINTS)
-            else route.continue_(),
-        )
-
         log(
             f"[{source_label}] Concurrencia activa: {concurrency} documentos en paralelo"
         )
@@ -194,11 +166,25 @@ async def run_grouped_scraper(
                 detail = "No fue posible descargar el certificado"
                 attempted_types = []
                 not_found_types = []
+                failure_details = []
+                best_validation = None
+                review_paths = []
 
                 for type_label, handler in document_handlers:
                     attempted_types.append(type_label)
-                    page = await context.new_page()
+                    # El portal puede guardar el certificado consultado en la sesión.
+                    # Cada intento necesita cookies y estado independientes.
+                    context = await browser.new_context(accept_downloads=True)
                     try:
+                        context.set_default_timeout(45000)
+                        await context.route(
+                            "**/*",
+                            lambda route: route.abort()
+                            if route.request.resource_type in BLOCKED_RESOURCE_TYPES
+                            or any(hint in route.request.url.lower() for hint in BLOCKED_URL_HINTS)
+                            else route.continue_(),
+                        )
+                        page = await context.new_page()
                         await page.goto(target_url, wait_until="domcontentloaded")
                         log(f"[{source_label}] Intentando {doc} con tipo {type_label}")
                         record_found = await handler(page, doc)
@@ -220,25 +206,44 @@ async def run_grouped_scraper(
                                     download = await download_info.value
                                     await download.save_as(pdf_path)
                                     pdf_text = extract_pdf_text(pdf_path)
-                                    matches, validation_detail = pdf_matches_expected_identity(
+                                    validation = validate_pdf_identity(
                                         pdf_text,
                                         expected_doc=doc,
                                         expected_names=expected_names,
                                     )
-                                    if not matches:
-                                        if os.path.exists(pdf_path):
+                                    if best_validation is None or (
+                                        validation.document_matches,
+                                        validation.overall_score if validation.overall_score is not None else -1,
+                                    ) > (
+                                        best_validation.document_matches,
+                                        best_validation.overall_score if best_validation.overall_score is not None else -1,
+                                    ):
+                                        best_validation = validation
+                                    validation_detail = validation.detail
+                                    if validation.status != "OK":
+                                        if validation.status == "REVISAR":
+                                            review_folder = os.path.join(folder, "REVISION")
+                                            os.makedirs(review_folder, exist_ok=True)
+                                            review_path = os.path.join(review_folder, f"{type_label}_{pdf_name}")
+                                            shutil.move(pdf_path, review_path)
+                                            review_paths.append(review_path)
+                                        elif os.path.exists(pdf_path):
                                             os.remove(pdf_path)
                                         detail = (
                                             f"Certificado descargado no coincide con documento consultado {doc}. "
                                             f"{validation_detail}"
                                         )
+                                        failure_details.append(f"Tipo {type_label}: {detail}")
                                         log(
-                                            f"[{source_label}] Certificado descartado para {doc}: "
+                                            f"[{source_label}] Validación {validation.status} para {doc}: "
                                             f"{validation_detail}"
                                         )
                                         break
 
-                                    detail = f"Descargado como {pdf_name}"
+                                    best_validation = validation
+                                    for review_path in review_paths:
+                                        os.remove(review_path)
+                                    detail = f"Descargado como {pdf_name}. {validation_detail}"
                                     download_success = True
                                     log(f"[{source_label}] Descargado {pdf_name}")
                                     break
@@ -253,8 +258,11 @@ async def run_grouped_scraper(
                                 break
 
                             if last_timeout_error is not None:
+                                failure_details.append(detail)
                                 log(f"[{source_label}] Timeout descargando {doc} usando {type_label}")
                                 continue
+
+                            continue
 
                         not_found_types.append(type_label)
                         detail = (
@@ -267,23 +275,43 @@ async def run_grouped_scraper(
                             f"Intentos realizados: {', '.join(attempted_types)}"
                         )
                         log(f"[{source_label}] Timeout con {doc} usando {type_label}")
+                        failure_details.append(detail)
                     except Exception as exc:
                         detail = (
                             f"Error con tipo {type_label}: {exc}. "
                             f"Intentos realizados: {', '.join(attempted_types)}"
                         )
                         log(f"[{source_label}] Error procesando {doc} con {type_label}: {exc}")
+                        failure_details.append(detail)
                     finally:
-                        await page.close()
+                        await context.close()
 
-                if not download_success and not_found_types and len(not_found_types) == len(document_handlers):
+                if not download_success and failure_details:
+                    detail = "; ".join(failure_details)
+                elif not download_success and not_found_types and len(not_found_types) == len(document_handlers):
                     detail = (
                         f"Documento {doc} no encontrado con TI ni CC"
                         if set(not_found_types) == {"TI", "CC"}
                         else f"Documento {doc} no encontrado con tipos {', '.join(not_found_types)}"
                     )
 
-                df.loc[df["Nro Iden"] == doc, "EstadoDescarga"] = "OK" if download_success else "ERROR"
+                status = "OK" if download_success else "ERROR"
+                if best_validation is not None:
+                    if not download_success and best_validation.status == "REVISAR":
+                        status = "REVISAR"
+                        detail = best_validation.detail + "; PDF conservado en carpeta REVISION. " + detail
+                    mask = df["Nro Iden"] == doc
+                    for column, value in {
+                        "CoincidenciaDocumento": 100.0 if best_validation.document_matches else 0.0,
+                        "CoincidenciaApellidos": best_validation.surnames_score,
+                        "CoincidenciaNombres": best_validation.names_score,
+                        "CoincidenciaGlobal": best_validation.overall_score,
+                        "NombreCertificado": best_validation.certificate_name,
+                        "RevisionIdentidad": "SI" if best_validation.review else "NO",
+                    }.items():
+                        if value is not None:
+                            df.loc[mask, column] = value
+                df.loc[df["Nro Iden"] == doc, "EstadoDescarga"] = status
                 df.loc[df["Nro Iden"] == doc, "DetalleDescarga"] = detail
 
         await asyncio.gather(

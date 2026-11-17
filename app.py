@@ -833,6 +833,22 @@ def pdfa_download_zip(job_id):
     return send_file(zip_path, as_attachment=True, download_name=zip_path.name)
 
 
+def cleanup_pdfa_job(zip_path: Path, work_dir: Path, keep_result: bool) -> None:
+    paths = [zip_path]
+    if keep_result:
+        paths.extend(work_dir / name for name in ("input", "tmp_convertidos", "resultado"))
+    else:
+        paths.append(work_dir)
+    for path in paths:
+        try:
+            if path.is_dir():
+                shutil.rmtree(path)
+            else:
+                path.unlink(missing_ok=True)
+        except OSError:
+            app.logger.exception("No se pudo limpiar el archivo o directorio PDF/A: %s", path)
+
+
 def run_pdfa_job(job_id: str, zip_path: Path, original_stem: str) -> None:
     state = PDFA_JOBS[job_id]
     work_dir = Path(PDFA_OUTPUT_FOLDER) / job_id
@@ -940,6 +956,8 @@ def run_pdfa_job(job_id: str, zip_path: Path, original_stem: str) -> None:
         state.message = "Proceso detenido por error"
         if state.logs is not None:
             state.logs.append(str(exc))
+    finally:
+        cleanup_pdfa_job(zip_path, work_dir, keep_result=state.status == "done")
 
 # --------------------------------------------------------------
 # MAIN

@@ -1,5 +1,6 @@
 import pandas as pd
 
+
 def generar_excel_coloreado(df, output):
     """
     Genera un Excel con la columna 'EstadoDescarga' coloreada:
@@ -12,7 +13,11 @@ def generar_excel_coloreado(df, output):
         raise ValueError("❌ La columna 'EstadoDescarga' no existe en el DataFrame.")
 
     priority_columns = [
-        column for column in ["EstadoDescarga", "DetalleDescarga"] if column in df.columns
+        column for column in [
+            "EstadoDescarga", "DetalleDescarga", "CoincidenciaDocumento",
+            "CoincidenciaApellidos", "CoincidenciaNombres", "CoincidenciaGlobal",
+            "NombreCertificado", "RevisionIdentidad",
+        ] if column in df.columns
     ]
     remaining_columns = [column for column in df.columns if column not in priority_columns]
     df = df[priority_columns + remaining_columns].copy()
@@ -185,7 +190,8 @@ def generar_excel_coloreado(df, output):
             detail_text = "" if pd.isna(detail_value) else str(detail_value)
             is_timeout = "TIMEOUT" in detail_text.upper()
 
-            if is_timeout:
+            needs_review = str(df.iloc[row - 1].get("RevisionIdentidad", "")).upper() == "SI"
+            if is_timeout or estado_txt == "REVISAR" or needs_review:
                 fmt = amarillo
                 row_base_fmt = row_timeout_fmt
                 row_wrap_fmt = row_timeout_wrap_fmt
@@ -206,7 +212,7 @@ def generar_excel_coloreado(df, output):
                 row_wrap_fmt = row_error_wrap_fmt
                 row_center_fmt = row_error_center_fmt
 
-            if estado_txt not in {"OK", "NO_APLICA", "ERROR"}:
+            if estado_txt not in {"OK", "NO_APLICA", "ERROR", "REVISAR"}:
                 row_base_fmt = text_fmt_alt if row % 2 == 0 else text_fmt
                 row_wrap_fmt = wrap_fmt_alt if row % 2 == 0 else wrap_fmt
                 row_center_fmt = center_fmt_alt if row % 2 == 0 else center_fmt
